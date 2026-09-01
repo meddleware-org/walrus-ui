@@ -1,0 +1,49 @@
+{
+  "name": "@meddleware/walrus-ui",
+  "version": "0.1.0",
+  "description": "Standalone Vue 3 SPA for uploading blobs to Walrus decentralised storage and managing owned blobs — wallet-connected, NFT-gated relay support.",
+  "author": "MeddleWare <meddleware@proton.me>",
+  "license": "0BSD",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meddleware-org/walrus-ui.git"
+  },
+  "type": "module",
+  "files": [
+    "src",
+    "index.html",
+    "vite.config.ts",
+    "tsconfig.json",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@meddleware/design-tokens": "^0.1.0",
+    "@meddleware/nft-gate-client": "^0.0.3",
+    "@meddleware/walrus-client": "^0.0.2",
+    "@meddleware/walrus-relay": "^0.1.0",
+    "@mysten/sui": "~2.17.0",
+    "@mysten/wallet-standard": "~0.19.9",
+    "@mysten/walrus": "~1.1.7",
+    "@mysten/walrus-wasm": "~0.2.2",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@types/node": "~24.12.2",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "~6.0.0",
+    "vite": "^8.1.5",
+    "vue-tsc": "~3.3.0"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.12.0"
+  }
+}

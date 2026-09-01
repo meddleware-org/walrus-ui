@@ -1,0 +1,184 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  IMAGE: walrus-ui
+
+jobs:
+  # ── App source: @meddleware/walrus-ui → npmjs ──────────────────────────────
+  # Uses OIDC trusted publisher — no static NPM_TOKEN secret required.
+  publish-npm:
+    name: npmjs (@meddleware/walrus-ui)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Publish to npmjs (provenance via OIDC, idempotent)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://registry.npmjs.org/@meddleware%2fwalrus-ui/${VERSION}")
+          if [ "$HTTP" = "200" ]; then
+            echo "::notice::v${VERSION} already published to npmjs — skipping"
+          else
+            npm publish --provenance
+          fi
+
+  # ── App: Docker image → quay.io + Docker Hub ────────────────────────────────
+  publish-docker-public:
+    name: Docker (quay.io + Docker Hub)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: docker/setup-qemu-action@v4.2.0
+      - uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Log in to quay.io
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: |
+            quay.io/${{ vars.QUAY_NAMESPACE }}/${{ env.IMAGE }}
+            docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+
+      - name: Build and push (multi-arch, SBOM + provenance)
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VITE_NETWORK=${{ vars.VITE_NETWORK || 'testnet' }}
+            VITE_WALRUS_RELAY_TESTNET=${{ vars.VITE_WALRUS_RELAY_TESTNET }}
+            VITE_WALRUS_RELAY_MAINNET=${{ vars.VITE_WALRUS_RELAY_MAINNET }}
+            VITE_ACCESS_GATE_ID_TESTNET=${{ vars.VITE_ACCESS_GATE_ID_TESTNET }}
+            VITE_ACCESS_GATE_SOULBOUND_TESTNET=${{ vars.VITE_ACCESS_GATE_SOULBOUND_TESTNET }}
+            VITE_ACCESS_GATE_PRICE_MIST_TESTNET=${{ vars.VITE_ACCESS_GATE_PRICE_MIST_TESTNET }}
+            VITE_UPLOAD_RELAY_MAX_TIP_MIST=${{ vars.VITE_UPLOAD_RELAY_MAX_TIP_MIST }}
+
+      - uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign images (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
+          DOCKERHUB_NS: ${{ vars.DOCKERHUB_NAMESPACE }}
+        run: |
+          cosign sign --yes "quay.io/${QUAY_NS}/${IMAGE}@${DIGEST}"
+          cosign sign --yes "docker.io/${DOCKERHUB_NS}/${IMAGE}@${DIGEST}"
+
+      - name: Attest build provenance (quay.io)
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: quay.io/${{ vars.QUAY_NAMESPACE }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: echo "Published & signed @ ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-docker-private:
+    name: Docker (self-hosted registry)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: docker/setup-qemu-action@v4.2.0
+      - uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Log in to self-hosted registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ vars.PRIVATE_REGISTRY }}
+          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
+          password: ${{ secrets.PRIVATE_REGISTRY_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ vars.PRIVATE_REGISTRY }}/${{ vars.PRIVATE_NAMESPACE }}/${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+
+      - name: Build and push
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VITE_NETWORK=${{ vars.VITE_NETWORK || 'testnet' }}
+            VITE_WALRUS_RELAY_TESTNET=${{ vars.VITE_WALRUS_RELAY_TESTNET }}
+            VITE_ACCESS_GATE_ID_TESTNET=${{ vars.VITE_ACCESS_GATE_ID_TESTNET }}
+            VITE_ACCESS_GATE_SOULBOUND_TESTNET=${{ vars.VITE_ACCESS_GATE_SOULBOUND_TESTNET }}
+            VITE_ACCESS_GATE_PRICE_MIST_TESTNET=${{ vars.VITE_ACCESS_GATE_PRICE_MIST_TESTNET }}
+            VITE_UPLOAD_RELAY_MAX_TIP_MIST=${{ vars.VITE_UPLOAD_RELAY_MAX_TIP_MIST }}
