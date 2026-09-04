@@ -11,7 +11,8 @@ import type { UploadResult } from '@meddleware/walrus-relay'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { useWallet, getSuiClient } from './wallet.js'
-import { NETWORK, OPERATOR_RELAY_HOSTS, relayHosts, accessGate } from './config.js'
+import { NETWORK, OPERATOR_RELAY_HOSTS, relayHosts, accessGate, uploadRelayMaxTipMist } from './config.js'
+import { runBlobUpload } from './upload-flow.js'
 import MyBlobs from './components/MyBlobs.vue'
 
 type Tab = 'upload' | 'blobs'
@@ -43,15 +44,15 @@ async function onPurchase(): Promise<void> {
   }
 }
 
-// Wire the shared WalrusUpload widget to @meddleware/walrus-client + the wallet.
+// Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
+// register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure only
+// gathers the wallet-bound inputs (executor, sui client, gated proof token) and delegates.
 async function performUpload(
   bytes: Uint8Array,
   opts: { relayHost: string; onStatus: (s: string) => void },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
-  const { createWalrusClient, createBlobUploadFlow, walrusBlobUrl } = await import('@meddleware/walrus-client')
   const executor = await buildExecutor(NETWORK)
-  const suiClient = getSuiClient(NETWORK)
 
   // If the relay is NFT-gated and we hold access, attach a signed proof token.
   let authToken: string | undefined
@@ -63,41 +64,19 @@ async function performUpload(
     })
   }
 
-  const client = createWalrusClient({
+  return runBlobUpload({
+    bytes,
     network: NETWORK,
+    relayHost: opts.relayHost,
+    address: account.value.address,
     wasmUrl: walrusWasmUrl,
-    uploadRelayHost: opts.relayHost,
-    uploadRelayAuthToken: authToken,
-    uploadRelayMaxTipMist: Number(import.meta.env.VITE_UPLOAD_RELAY_MAX_TIP_MIST) || 50_000_000,
-  })
-  const flow = createBlobUploadFlow(client, bytes)
-
-  opts.onStatus('Encoding…')
-  await flow.encode()
-
-  opts.onStatus('Registering blob (approve in wallet)…')
-  const regTx = flow.register({
-    owner: account.value.address,
+    maxTipMist: uploadRelayMaxTipMist(),
     epochs: MAX_SINGLE_RESERVATION_EPOCHS,
-    deletable: false,
+    executor,
+    suiClient: getSuiClient(NETWORK),
+    authToken,
+    onStatus: opts.onStatus,
   })
-  regTx.setSenderIfNotSet(account.value.address)
-  await regTx.build({ client: suiClient })
-  const reg = await executor.signAndExecute(regTx)
-  await executor.waitForTransaction(reg.digest)
-
-  opts.onStatus('Uploading to the relay…')
-  await flow.upload({ digest: reg.digest })
-
-  opts.onStatus('Certifying (approve in wallet)…')
-  const certTx = flow.certify()
-  certTx.setSenderIfNotSet(account.value.address)
-  await certTx.build({ client: suiClient })
-  const cert = await executor.signAndExecute(certTx)
-  await executor.waitForTransaction(cert.digest)
-
-  const blob = await flow.getBlob()
-  return { blobId: blob.blobId, url: walrusBlobUrl(NETWORK, blob.blobId), digest: cert.digest }
 }
 
 function onUploaded(r: UploadResult): void {
