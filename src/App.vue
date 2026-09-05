@@ -10,10 +10,14 @@ import {
 import type { UploadResult } from '@meddleware/walrus-relay'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
+import { AppHeader, AppFooter, ColorModeControl, useColorMode } from '@meddleware/ui'
 import { useWallet, getSuiClient } from './wallet.js'
 import { NETWORK, OPERATOR_RELAY_HOSTS, relayHosts, accessGate, uploadRelayMaxTipMist } from './config.js'
 import { runBlobUpload } from './upload-flow.js'
 import MyBlobs from './components/MyBlobs.vue'
+
+const isEmbedded = new URLSearchParams(window.location.search).has('embedded')
+const { mode, set } = useColorMode('dark')
 
 type Tab = 'upload' | 'blobs'
 const activeTab = ref<Tab>('upload')
@@ -85,133 +89,149 @@ function onUploaded(r: UploadResult): void {
 </script>
 
 <template>
-  <div class="page">
-    <header class="head">
-      <div>
-        <h1>Walrus Assets</h1>
-        <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
-      </div>
-      <TipConfigBadge :host="OPERATOR_RELAY_HOSTS[NETWORK]" />
-    </header>
-
-    <nav class="tabs" aria-label="Feature tabs">
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'upload' }"
-        @click="activeTab = 'upload'"
-      >
-        Upload
-      </button>
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'blobs' }"
-        @click="activeTab = 'blobs'"
-      >
-        My Blobs
-      </button>
-    </nav>
-
-    <section class="wallet">
-      <template v-if="account">
-        <span class="addr">{{ account.address.slice(0, 8) }}…{{ account.address.slice(-4) }}</span>
-        <button type="button" @click="disconnect">Disconnect</button>
+  <div class="app" :class="{ 'app--embedded': isEmbedded }">
+    <AppHeader v-if="!isEmbedded" variant="dark">
+      <template #brand>
+        <span>Walrus Assets</span>
       </template>
-      <template v-else>
-        <button type="button" :disabled="!wallets.length" @click="onConnectFirst">
-          {{ wallets.length ? 'Connect wallet' : 'No wallet detected' }}
+      <template #actions>
+        <TipConfigBadge :host="OPERATOR_RELAY_HOSTS[NETWORK]" />
+        <ColorModeControl :model-value="mode" @update:model-value="set" />
+      </template>
+    </AppHeader>
+
+    <div class="page">
+      <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
+
+      <nav class="tabs" aria-label="Feature tabs">
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'upload' }"
+          @click="activeTab = 'upload'"
+        >
+          Upload
         </button>
-      </template>
-    </section>
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'blobs' }"
+          @click="activeTab = 'blobs'"
+        >
+          My Blobs
+        </button>
+      </nav>
 
-    <template v-if="activeTab === 'upload'">
-      <AccessGateCta
-        :gate-configured="gateState.gateConfigured"
-        :has-access="gateState.hasAccess.value"
-        :busy="purchasing"
-        :price-mist="gate?.priceMist ?? null"
-        @purchase="onPurchase"
-      />
-
-      <WalrusUpload
-        :hosts="relayHosts(NETWORK)"
-        :connected="!!account"
-        :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
-        :perform-upload="performUpload"
-        @uploaded="onUploaded"
-      />
-
-      <section v-if="result" class="result">
-        <h2>Uploaded ✓</h2>
-        <p><strong>Blob ID:</strong> <code>{{ result.blobId }}</code></p>
-        <p>
-          <strong>URL:</strong>
-          <a :href="result.url" target="_blank" rel="noopener">{{ result.url }}</a>
-        </p>
-        <p v-if="result.digest"><strong>Certify tx:</strong> <code>{{ result.digest }}</code></p>
+      <section class="wallet">
+        <template v-if="account">
+          <span class="addr">{{ account.address.slice(0, 8) }}…{{ account.address.slice(-4) }}</span>
+          <button type="button" @click="disconnect">Disconnect</button>
+        </template>
+        <template v-else>
+          <button type="button" :disabled="!wallets.length" @click="onConnectFirst">
+            {{ wallets.length ? 'Connect wallet' : 'No wallet detected' }}
+          </button>
+        </template>
       </section>
-    </template>
 
-    <MyBlobs
-      v-if="activeTab === 'blobs'"
-      :address="account?.address ?? null"
-      :build-executor="() => buildExecutor(NETWORK)"
-    />
+      <template v-if="activeTab === 'upload'">
+        <AccessGateCta
+          :gate-configured="gateState.gateConfigured"
+          :has-access="gateState.hasAccess.value"
+          :busy="purchasing"
+          :price-mist="gate?.priceMist ?? null"
+          @purchase="onPurchase"
+        />
 
-    <footer class="foot">
-      <p>© MeddleWare · <a href="https://sui.meddleware.co.uk">more SUI tools</a></p>
-    </footer>
+        <WalrusUpload
+          :hosts="relayHosts(NETWORK)"
+          :connected="!!account"
+          :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
+          :perform-upload="performUpload"
+          @uploaded="onUploaded"
+        />
+
+        <section v-if="result" class="result">
+          <h2>Uploaded ✓</h2>
+          <p><strong>Blob ID:</strong> <code>{{ result.blobId }}</code></p>
+          <p>
+            <strong>URL:</strong>
+            <a :href="result.url" target="_blank" rel="noopener">{{ result.url }}</a>
+          </p>
+          <p v-if="result.digest"><strong>Certify tx:</strong> <code>{{ result.digest }}</code></p>
+        </section>
+      </template>
+
+      <MyBlobs
+        v-if="activeTab === 'blobs'"
+        :address="account?.address ?? null"
+        :build-executor="() => buildExecutor(NETWORK)"
+      />
+    </div>
+
+    <AppFooter v-if="!isEmbedded" />
   </div>
 </template>
 
 <style scoped>
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app--embedded {
+  min-height: 100%;
+}
+
 .page {
   max-width: 640px;
   margin: 0 auto;
   padding: 2rem 1.25rem 4rem;
+  flex: 1;
 }
-.head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
-  flex-wrap: wrap;
+
+.app--embedded .page {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
 }
-.head h1 {
-  margin: 0;
-  font-size: 1.8rem;
-}
+
 .sub {
-  color: var(--mw-color-text-muted, #666);
+  color: var(--muted);
   margin: 0.25rem 0 0;
 }
+
 .wallet {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin: 1.25rem 0;
 }
+
 .addr {
   font-family: monospace;
   font-size: 0.9rem;
 }
+
 .result {
   margin-top: 1.5rem;
   padding: 1rem;
-  border: 1px solid var(--mw-color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 10px;
   word-break: break-all;
 }
+
 .result code {
   font-size: 0.85rem;
 }
+
 .tabs {
   display: flex;
   gap: 0.25rem;
   margin: 1rem 0 0.5rem;
-  border-bottom: 2px solid var(--mw-color-border, #ddd);
+  border-bottom: 2px solid var(--border);
 }
+
 .tab {
   background: none;
   border: none;
@@ -220,16 +240,12 @@ function onUploaded(r: UploadResult): void {
   margin-bottom: -2px;
   cursor: pointer;
   font-size: 0.95rem;
-  color: var(--mw-color-text-muted, #666);
+  color: var(--muted);
 }
+
 .tab.active {
-  border-bottom-color: var(--mw-color-primary, #6c3);
-  color: var(--mw-color-text, #111);
+  border-bottom-color: var(--accent);
+  color: var(--text);
   font-weight: 600;
-}
-.foot {
-  margin-top: 3rem;
-  font-size: 0.85rem;
-  color: var(--mw-color-text-muted, #666);
 }
 </style>
