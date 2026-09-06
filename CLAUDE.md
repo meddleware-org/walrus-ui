@@ -14,10 +14,13 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 - **Thin app.** No accounting logic, no chain state derivation, no financial calculations.
   The app is an orchestration shell. All pricing and economic truth lives on-chain.
 - **Upload flow is injected, not embedded.** `@mysten/walrus` (the wasm client) is imported
-  dynamically inside `performUpload` in `App.vue` — not in the eagerly-loaded module graph.
+  dynamically inside `performUpload` in `WalrusView.vue` — not in the eagerly-loaded module graph.
   This keeps the initial bundle small and defers wasm loading until upload is triggered.
-- **Wallet-agnostic.** Wallet connections go through `src/wallet.ts` (wallet-standard), not
-  through any specific wallet adapter. Do not hardcode a wallet.
+- **Wallet-agnostic + shared.** Wallet connections go through `src/wallet.ts`, a thin shim over
+  the shared `@meddleware/wallet-adapter` singleton — not any specific wallet extension. The
+  singleton means that when `WalrusView` is embedded in the dashboard alongside other tool views,
+  they all share one connection. Do not hardcode a wallet; do not reintroduce a local
+  wallet-standard implementation.
 - **Commission enforcement is in the library.** `src/config.ts` reads `ACCESS_GATE_PACKAGE_ID`
   and `ACCESS_GATE_PLATFORM_CONFIG_ID` from `@meddleware/walrus-relay/constants` — these are
   hardcoded in the library to ensure commission routing. Do not override them here.
@@ -33,10 +36,19 @@ give operators control over their tip ceiling. Do NOT hardcode 50_000_000 again.
 
 | File | Purpose |
 | --- | --- |
-| `src/App.vue` | Main app: wallet connect, gate state, upload orchestration |
+| `src/App.vue` | Standalone shell only: `AppHeader` (+ `TipConfigBadge`, `ColorModeControl`) + `<WalrusView>` + `AppFooter` |
+| `src/components/WalrusView.vue` | Core tool UI (tabs, wallet section, gate state, upload orchestration, `MyBlobs`). Exported for inline embedding. |
+| `src/index.ts` | Library entry — exports `WalrusView` for the dashboard to render inline |
 | `src/config.ts` | Env var reading, relay hosts, access gate config parsing |
-| `src/wallet.ts` | Wallet-standard connect/disconnect, `signPersonalMessage`, `buildExecutor` |
+| `src/wallet.ts` | Thin shim over `@meddleware/wallet-adapter` binding walrus-ui's `RPC_URLS`; re-exports `useWallet` / `getSuiClient` / `buildExecutor` / `Executor` |
 | `src/components/MyBlobs.vue` | Owned blob listing and lifetime extension |
+
+## Dual app + library
+
+This package is **both** a standalone SPA (`App.vue` + `main.ts`, built with `vite build`) and a
+library (`src/index.ts` exports `WalrusView`, resolved via `"exports"`). The dashboard imports
+`WalrusView` and wraps it in its own shell + shared wallet. Keep the core UI in `WalrusView.vue`
+(shell-free) so both consumers stay in sync; `App.vue` must remain a thin shell.
 
 ## Extension roadmap
 
