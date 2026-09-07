@@ -37,7 +37,7 @@ async function loadBlobs(): Promise<void> {
   blobs.value = []
   try {
     const { createWalrusClient, fetchOwnedWalrusBlobs } = await import('@meddleware/walrus-client')
-    const suiClient = getSuiClient(NETWORK)
+    const suiClient = getSuiClient()
     const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
     const [sys, fetched] = await Promise.all([
       suiClient.getCurrentSystemState(),

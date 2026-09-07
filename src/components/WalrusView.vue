@@ -25,7 +25,7 @@ const activeTab = ref<Tab>('upload')
 const { account, signPersonalMessage, buildExecutor } = useWallet()
 
 const gate = accessGate(NETWORK)
-const gateState = useAccessGate({ gate, getClient: () => getSuiClient(NETWORK) })
+const gateState = useAccessGate({ gate, getClient: () => getSuiClient() })
 const purchasing = ref(false)
 const result = ref<UploadResult | null>(null)
 
@@ -41,7 +41,7 @@ async function onPurchase(): Promise<void> {
   if (!account.value) return
   purchasing.value = true
   try {
-    const executor = await buildExecutor(NETWORK)
+    const executor = await buildExecutor()
     await gateState.purchase(executor, account.value.address)
   } finally {
     purchasing.value = false
@@ -56,7 +56,7 @@ async function performUpload(
   opts: { relayHost: string; onStatus: (s: string) => void },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
-  const executor = await buildExecutor(NETWORK)
+  const executor = await buildExecutor()
 
   // If the relay is NFT-gated and we hold access, attach a signed proof token.
   let authToken: string | undefined
@@ -77,7 +77,7 @@ async function performUpload(
     maxTipMist: uploadRelayMaxTipMist(),
     epochs: MAX_SINGLE_RESERVATION_EPOCHS,
     executor,
-    suiClient: getSuiClient(NETWORK),
+    suiClient: getSuiClient(),
     authToken,
     onStatus: opts.onStatus,
   })
@@ -143,7 +143,7 @@ function onUploaded(r: UploadResult): void {
     <MyBlobs
       v-if="activeTab === 'blobs'"
       :address="account?.address ?? null"
-      :build-executor="() => buildExecutor(NETWORK)"
+      :build-executor="() => buildExecutor()"
     />
     </WalletGuard>
   </div>
