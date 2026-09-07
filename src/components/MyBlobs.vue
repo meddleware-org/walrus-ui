@@ -40,11 +40,11 @@ async function loadBlobs(): Promise<void> {
     const suiClient = getSuiClient(NETWORK)
     const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
     const [sys, fetched] = await Promise.all([
-      suiClient.getLatestSuiSystemState(),
+      suiClient.getCurrentSystemState(),
       fetchOwnedWalrusBlobs(suiClient, walrusClient, props.address),
     ])
-    currentEpoch.value = Number(sys.epoch)
-    blobs.value = fetched.sort((a, b) => a.endEpoch - b.endEpoch)
+    currentEpoch.value = Number(sys.systemState.epoch)
+    blobs.value = fetched.sort((a: OwnedBlob, b: OwnedBlob) => a.endEpoch - b.endEpoch)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {

@@ -48,12 +48,12 @@ export function uploadRelayMaxTipMist(envSource: EnvSource = env): number {
 }
 
 /**
- * JSON-RPC endpoint used to build + execute the register/certify transactions.
- * NOTE: this is JSON-RPC (the public testnet fullnode serves gRPC only for JSON-RPC,
- * so a JSON-RPC-capable endpoint is used for testnet).
+ * gRPC-web endpoint used to build + execute the register/certify transactions and read owned
+ * blobs. The Sui SDK's JSON-RPC client is deprecated, so this must be a gRPC-web-capable endpoint
+ * (the Mysten public fullnodes serve gRPC-web at :443 via the browser Fetch transport).
  */
 export const RPC_URLS: Record<WalrusNetwork, string> = {
-  testnet: env.VITE_RPC_TESTNET || 'https://sui-testnet-rpc.publicnode.com',
+  testnet: env.VITE_RPC_TESTNET || 'https://fullnode.testnet.sui.io:443',
   mainnet: env.VITE_RPC_MAINNET || 'https://fullnode.mainnet.sui.io:443',
 }
 
