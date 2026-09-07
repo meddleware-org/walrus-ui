@@ -3,7 +3,7 @@
 // Rendered standalone by walrus-ui's App.vue and inline by the dashboard. Wallet state comes
 // from the shared @meddleware/wallet-adapter singleton (via ./wallet.js), so connecting here or
 // in any other inline tool view reflects everywhere.
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import {
   WalrusUpload,
   AccessGateCta,
@@ -13,6 +13,7 @@ import {
 import type { UploadResult } from '@meddleware/walrus-relay'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
+import { WalletGuard } from '@meddleware/wallet-adapter'
 import { useWallet, getSuiClient } from '../wallet.js'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist } from '../config.js'
 import { runBlobUpload } from '../upload-flow.js'
@@ -21,20 +22,20 @@ import MyBlobs from './MyBlobs.vue'
 type Tab = 'upload' | 'blobs'
 const activeTab = ref<Tab>('upload')
 
-const { wallets, account, connect, disconnect, signPersonalMessage, buildExecutor } = useWallet()
+const { account, signPersonalMessage, buildExecutor } = useWallet()
 
 const gate = accessGate(NETWORK)
 const gateState = useAccessGate({ gate, getClient: () => getSuiClient(NETWORK) })
 const purchasing = ref(false)
 const result = ref<UploadResult | null>(null)
 
-async function onConnectFirst(): Promise<void> {
-  const w = wallets.value[0]
-  if (w) {
-    await connect(w)
-    if (account.value) await gateState.checkOwnership(account.value.address)
-  }
-}
+// Check gate ownership whenever the connected account changes (handles connect, reconnect,
+// and disconnect without needing a manual trigger from the connect button).
+watch(
+  () => account.value?.address ?? null,
+  (addr) => { if (addr && gate) void gateState.checkOwnership(addr) },
+  { immediate: true },
+)
 
 async function onPurchase(): Promise<void> {
   if (!account.value) return
@@ -91,36 +92,25 @@ function onUploaded(r: UploadResult): void {
   <div class="page">
     <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
 
-    <nav class="tabs" aria-label="Feature tabs">
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'upload' }"
-        @click="activeTab = 'upload'"
-      >
-        Upload
-      </button>
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'blobs' }"
-        @click="activeTab = 'blobs'"
-      >
-        My Blobs
-      </button>
-    </nav>
-
-    <section class="wallet">
-      <template v-if="account">
-        <span class="addr">{{ account.address.slice(0, 8) }}…{{ account.address.slice(-4) }}</span>
-        <button type="button" @click="disconnect">Disconnect</button>
-      </template>
-      <template v-else>
-        <button type="button" :disabled="!wallets.length" @click="onConnectFirst">
-          {{ wallets.length ? 'Connect wallet' : 'No wallet detected' }}
+    <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
+      <nav class="tabs" aria-label="Feature tabs">
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'upload' }"
+          @click="activeTab = 'upload'"
+        >
+          Upload
         </button>
-      </template>
-    </section>
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'blobs' }"
+          @click="activeTab = 'blobs'"
+        >
+          My Blobs
+        </button>
+      </nav>
 
     <template v-if="activeTab === 'upload'">
       <AccessGateCta
@@ -155,6 +145,7 @@ function onUploaded(r: UploadResult): void {
       :address="account?.address ?? null"
       :build-executor="() => buildExecutor(NETWORK)"
     />
+    </WalletGuard>
   </div>
 </template>
 
@@ -169,18 +160,6 @@ function onUploaded(r: UploadResult): void {
 .sub {
   color: var(--muted);
   margin: 0.25rem 0 0;
-}
-
-.wallet {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 1.25rem 0;
-}
-
-.addr {
-  font-family: monospace;
-  font-size: 0.9rem;
 }
 
 .result {
