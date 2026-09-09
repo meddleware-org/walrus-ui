@@ -21,7 +21,8 @@ test('switching to the My Blobs tab prompts for a wallet connection', async ({ p
 
 test('the wallet control reflects that no wallet is present in a bare browser', async ({ page }) => {
   await page.goto('/')
-  // wallet.ts filters to wallets exposing standard:connect + sui:signTransaction; a bare Chromium
-  // has none, so the connect button is disabled with the "No wallet detected" label.
-  await expect(page.getByRole('button', { name: 'No wallet detected' })).toBeVisible()
+  // WalletGuard renders WalletModal's trigger button when no wallet is connected. The modal always
+  // shows "Connect wallet" regardless of installed wallets; the empty-wallet message appears inside
+  // the modal after it is opened.
+  await expect(page.getByRole('button', { name: 'Connect wallet' })).toBeVisible()
 })
