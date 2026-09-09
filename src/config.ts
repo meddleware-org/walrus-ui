@@ -34,8 +34,8 @@ export function relayHosts(network: WalrusNetwork): { operator: string; public: 
   return { operator: OPERATOR_RELAY_HOSTS[network], public: PUBLIC_WALRUS_RELAY_HOSTS[network] }
 }
 
-/** Default relay tip ceiling (MIST) when `VITE_UPLOAD_RELAY_MAX_TIP_MIST` is unset (0.05 SUI). */
-export const DEFAULT_UPLOAD_RELAY_MAX_TIP_MIST = 50_000_000
+/** Default relay tip ceiling (MIST) when `VITE_UPLOAD_RELAY_MAX_TIP_MIST` is unset (0.5 SUI). */
+export const DEFAULT_UPLOAD_RELAY_MAX_TIP_MIST = 500_000_000
 
 /**
  * Cap on the relay tip payment in MIST, from `VITE_UPLOAD_RELAY_MAX_TIP_MIST`. This is a ceiling to
