@@ -101,60 +101,60 @@ function onSettled(): void {
   <div class="page">
     <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
 
+    <nav class="tabs" aria-label="Feature tabs">
+      <button
+        type="button"
+        class="tab"
+        :class="{ active: activeTab === 'upload' }"
+        @click="activeTab = 'upload'"
+      >
+        Upload
+      </button>
+      <button
+        type="button"
+        class="tab"
+        :class="{ active: activeTab === 'blobs' }"
+        @click="activeTab = 'blobs'"
+      >
+        My Blobs
+      </button>
+    </nav>
+
     <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
-      <nav class="tabs" aria-label="Feature tabs">
-        <button
-          type="button"
-          class="tab"
-          :class="{ active: activeTab === 'upload' }"
-          @click="activeTab = 'upload'"
-        >
-          Upload
-        </button>
-        <button
-          type="button"
-          class="tab"
-          :class="{ active: activeTab === 'blobs' }"
-          @click="activeTab = 'blobs'"
-        >
-          My Blobs
-        </button>
-      </nav>
+      <template v-if="activeTab === 'upload'">
+        <AccessGateCta
+          :gate-configured="gateState.gateConfigured"
+          :has-access="gateState.hasAccess.value"
+          :busy="purchasing"
+          :price-mist="gate?.priceMist ?? null"
+          @purchase="onPurchase"
+        />
 
-    <template v-if="activeTab === 'upload'">
-      <AccessGateCta
-        :gate-configured="gateState.gateConfigured"
-        :has-access="gateState.hasAccess.value"
-        :busy="purchasing"
-        :price-mist="gate?.priceMist ?? null"
-        @purchase="onPurchase"
+        <WalrusUpload
+          :hosts="relayHosts(NETWORK)"
+          :connected="!!account"
+          :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
+          :perform-upload="performUpload"
+          @uploaded="onUploaded"
+          @settled="onSettled"
+        />
+
+        <section v-if="result" class="result">
+          <h2>Uploaded ✓</h2>
+          <p><strong>Blob ID:</strong> <code>{{ result.blobId }}</code></p>
+          <p>
+            <strong>URL:</strong>
+            <a :href="result.url" target="_blank" rel="noopener">{{ result.url }}</a>
+          </p>
+          <p v-if="result.digest"><strong>Certify tx:</strong> <code>{{ result.digest }}</code></p>
+        </section>
+      </template>
+
+      <MyBlobs
+        v-if="activeTab === 'blobs'"
+        :address="account?.address ?? null"
+        :build-executor="() => buildExecutor()"
       />
-
-      <WalrusUpload
-        :hosts="relayHosts(NETWORK)"
-        :connected="!!account"
-        :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
-        :perform-upload="performUpload"
-        @uploaded="onUploaded"
-        @settled="onSettled"
-      />
-
-      <section v-if="result" class="result">
-        <h2>Uploaded ✓</h2>
-        <p><strong>Blob ID:</strong> <code>{{ result.blobId }}</code></p>
-        <p>
-          <strong>URL:</strong>
-          <a :href="result.url" target="_blank" rel="noopener">{{ result.url }}</a>
-        </p>
-        <p v-if="result.digest"><strong>Certify tx:</strong> <code>{{ result.digest }}</code></p>
-      </section>
-    </template>
-
-    <MyBlobs
-      v-if="activeTab === 'blobs'"
-      :address="account?.address ?? null"
-      :build-executor="() => buildExecutor()"
-    />
     </WalletGuard>
   </div>
 </template>

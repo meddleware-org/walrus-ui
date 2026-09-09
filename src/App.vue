@@ -13,7 +13,7 @@ const { mode, set } = useColorMode('dark')
   <div class="app">
     <AppHeader variant="dark">
       <template #brand>
-        <span>Walrus Assets</span>
+        <h1 class="brand-title">Walrus Assets</h1>
       </template>
       <template #actions>
         <TipConfigBadge :host="OPERATOR_RELAY_HOSTS[NETWORK]" />
@@ -32,5 +32,10 @@ const { mode, set } = useColorMode('dark')
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+.brand-title {
+  font: inherit;
+  margin: 0;
 }
 </style>
