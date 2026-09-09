@@ -17,6 +17,7 @@ import { WalletGuard } from '@meddleware/wallet-adapter'
 import { useWallet, getSuiClient } from '../wallet.js'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist } from '../config.js'
 import { runBlobUpload } from '../upload-flow.js'
+import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
 type Tab = 'upload' | 'blobs'
@@ -83,8 +84,16 @@ async function performUpload(
   })
 }
 
+const ownedBlobs = useOwnedBlobs()
+
 function onUploaded(r: UploadResult): void {
   result.value = r
+}
+
+// Fires after every upload attempt (success or failure) — a failed UI run may still have landed
+// on-chain, so force-refresh the owned-blobs cache in the background regardless of outcome.
+function onSettled(): void {
+  if (account.value) void ownedBlobs.load(account.value.address, { force: true })
 }
 </script>
 
@@ -127,6 +136,7 @@ function onUploaded(r: UploadResult): void {
         :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
         :perform-upload="performUpload"
         @uploaded="onUploaded"
+        @settled="onSettled"
       />
 
       <section v-if="result" class="result">

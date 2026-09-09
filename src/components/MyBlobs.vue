@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import type { OwnedBlob } from '@meddleware/walrus-client'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
-import { getSuiClient } from '../wallet.js'
 import type { Executor } from '../wallet.js'
 import { NETWORK } from '../config.js'
+import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 
 const props = defineProps<{
   /** Connected wallet address whose owned blobs to list; `null` when no wallet is connected. */
@@ -13,10 +13,8 @@ const props = defineProps<{
   buildExecutor: () => Promise<Executor>
 }>()
 
-const blobs = ref<OwnedBlob[]>([])
-const loading = ref(false)
-const error = ref<string | null>(null)
-const currentEpoch = ref(0)
+// Shared, session-persistent cache (survives tab switches and inline re-mounts).
+const { blobs, currentEpoch, loading, error, load } = useOwnedBlobs()
 const extending = ref<string | null>(null)
 const extendStatus = ref<Record<string, string>>({})
 
@@ -30,26 +28,9 @@ function epochsToApproxDays(epochs: number): string {
   return `${days} days`
 }
 
-async function loadBlobs(): Promise<void> {
-  if (!props.address) return
-  loading.value = true
-  error.value = null
-  blobs.value = []
-  try {
-    const { createWalrusClient, fetchOwnedWalrusBlobs } = await import('@meddleware/walrus-client')
-    const suiClient = getSuiClient()
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
-    const [sys, fetched] = await Promise.all([
-      suiClient.getCurrentSystemState(),
-      fetchOwnedWalrusBlobs(suiClient, walrusClient, props.address),
-    ])
-    currentEpoch.value = Number(sys.systemState.epoch)
-    blobs.value = fetched.sort((a: OwnedBlob, b: OwnedBlob) => a.endEpoch - b.endEpoch)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    loading.value = false
-  }
+/** Force a fresh fetch (Refresh button + after an on-chain-affecting action). */
+function refresh(): Promise<void> {
+  return load(props.address, { force: true })
 }
 
 async function extendBlob(blob: OwnedBlob): Promise<void> {
@@ -65,7 +46,7 @@ async function extendBlob(blob: OwnedBlob): Promise<void> {
     await executor.waitForTransaction(digest)
     extendStatus.value = { ...extendStatus.value, [blob.objectId]: `Extended ✓ (${digest.slice(0, 8)}…)` }
     // Refresh the list so the new endEpoch is visible.
-    await loadBlobs()
+    await refresh()
   } catch (e) {
     extendStatus.value = {
       ...extendStatus.value,
@@ -76,14 +57,17 @@ async function extendBlob(blob: OwnedBlob): Promise<void> {
   }
 }
 
-watch(() => props.address, loadBlobs)
+// Load on first open (fixes "nothing shows until Refresh") and whenever the address changes.
+// The composable no-ops when the list is already cached for this address, so re-mounting is cheap.
+onMounted(() => void load(props.address))
+watch(() => props.address, (addr) => void load(addr))
 </script>
 
 <template>
   <section class="my-blobs">
     <div class="toolbar">
       <h2>My Blobs</h2>
-      <button type="button" :disabled="!address || loading" @click="loadBlobs">
+      <button type="button" :disabled="!address || loading" @click="refresh">
         {{ loading ? 'Loading…' : 'Refresh' }}
       </button>
     </div>
