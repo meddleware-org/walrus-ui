@@ -15,6 +15,7 @@ import type { UploadResult } from '@meddleware/walrus-relay'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
 import { useWallet, getSuiClient } from '../wallet.js'
+import { fetchChallenge, buildAccessProof } from '@meddleware/nft-gate-client'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist } from '../config.js'
 import { runBlobUpload } from '../upload-flow.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
@@ -59,13 +60,23 @@ async function performUpload(
   if (!account.value) throw new Error('Connect your wallet first.')
   const executor = await buildExecutor()
 
-  // If the relay is NFT-gated and we hold access, attach a signed proof token.
+  // If the relay is NFT-gated and we hold access, run the SINGLE_USE consume flow:
+  // fetch a challenge nonce, execute the on-chain access_gate::consume tx to record
+  // use of that nonce (produces a consumeDigest), then sign a proof token that
+  // includes both. SINGLE_USE=true gateways reject proofs without a consumeDigest.
+  // TODO: replace this block with `gateState.consumeAndBuildToken(...)` once
+  //       @meddleware/walrus-relay ≥ 0.1.6 is installed.
   let authToken: string | undefined
-  if (gate && gateState.hasAccess.value === true) {
-    authToken = await gateState.buildRelayAccessToken({
-      relayHost: opts.relayHost,
+  if (gate && gateState.hasAccess.value === true && gateState.nftId.value) {
+    const challenge = await fetchChallenge(opts.relayHost)
+    const consumeTx = gateState.buildConsume(gateState.nftId.value, challenge.nonce)
+    const consumeResult = await executor.signAndExecute(consumeTx)
+    if (consumeResult.digest) await executor.waitForTransaction(consumeResult.digest).catch(() => {})
+    authToken = await buildAccessProof({
       address: account.value.address,
+      challenge,
       sign: signPersonalMessage,
+      consumeDigest: consumeResult.digest,
     })
   }
 
@@ -91,9 +102,13 @@ function onUploaded(r: UploadResult): void {
 }
 
 // Fires after every upload attempt (success or failure) — a failed UI run may still have landed
-// on-chain, so force-refresh the owned-blobs cache in the background regardless of outcome.
+// on-chain, so force-refresh the owned-blobs cache and NFT ownership (uses remaining) in the
+// background regardless of outcome.
 function onSettled(): void {
-  if (account.value) void ownedBlobs.load(account.value.address, { force: true })
+  if (account.value) {
+    void ownedBlobs.load(account.value.address, { force: true })
+    void gateState.checkOwnership(account.value.address)
+  }
 }
 </script>
 
