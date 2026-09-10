@@ -118,6 +118,7 @@ jobs:
 
       - name: Attest build provenance (quay.io)
         uses: actions/attest-build-provenance@v4.2.2
+        continue-on-error: true  # GitHub trust-metadata-api can be transiently unavailable
         with:
           subject-name: quay.io/${{ vars.QUAY_NAMESPACE }}/${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -125,6 +126,7 @@ jobs:
 
       - name: Attest build provenance (Docker Hub)
         uses: actions/attest-build-provenance@v4.2.2
+        continue-on-error: true  # GitHub trust-metadata-api can be transiently unavailable
         with:
           subject-name: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}

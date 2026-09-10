@@ -27,10 +27,10 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 
 ## Env var: uploadRelayMaxTipMist
 
-`App.vue` reads `VITE_UPLOAD_RELAY_MAX_TIP_MIST` (baked in at build time) with a 50,000,000
-MIST (0.05 SUI) fallback. This is a cap on the relay tip payment, not a fixed charge — the
+`App.vue` reads `VITE_UPLOAD_RELAY_MAX_TIP_MIST` (baked in at build time) with a 500,000,000
+MIST (0.5 SUI) fallback. This is a cap on the relay tip payment, not a fixed charge — the
 relay asks for the minimum; this prevents overpayment. Set it via the Docker `--build-arg` to
-give operators control over their tip ceiling. Do NOT hardcode 50_000_000 again.
+give operators control over their tip ceiling.
 
 ## Key source files
 
@@ -53,6 +53,7 @@ library (`src/index.ts` exports `WalrusView`, resolved via `"exports"`). The das
 ## Extension roadmap
 
 `walrus-ui` is intended to grow into the full UI for all Walrus-on-Sui functionality:
+
 - Blob listing and search across multiple owners
 - Blob lifetime extension UI
 - Token image upload (redirected from `token-deployer-sui`)
