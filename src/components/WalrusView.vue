@@ -18,6 +18,7 @@ import { useWallet, getSuiClient } from '../wallet.js'
 import { fetchChallenge, buildAccessProof } from '@meddleware/nft-gate-client'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist } from '../config.js'
 import { runBlobUpload } from '../upload-flow.js'
+import { consumeStorageKey, isRedeemedConflict, resolveGatedAuthToken } from '../access-resume.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
@@ -53,34 +54,69 @@ async function onPurchase(): Promise<void> {
 // Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
 // register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure only
 // gathers the wallet-bound inputs (executor, sui client, gated proof token) and delegates.
+//
+// Single-use resume: the relay treats the permanent on-chain `consumeDigest` as the one-time
+// redemption token, so a use is only spent when an upload succeeds. We persist the digest before
+// uploading and reuse it on retry/reload (re-signing a fresh challenge is free) — an interrupted
+// upload never burns a use. On success we clear it; if the relay reports the digest already
+// redeemed (a prior upload actually landed), we clear and consume a fresh use once.
 async function performUpload(
   bytes: Uint8Array,
   opts: { relayHost: string; onStatus: (s: string) => void },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
   const executor = await buildExecutor()
+  const address = account.value.address
 
-  // If the relay is NFT-gated and we hold access, run the SINGLE_USE consume flow:
-  // fetch a challenge nonce, execute the on-chain access_gate::consume tx to record
-  // use of that nonce (produces a consumeDigest), then sign a proof token that
-  // includes both. SINGLE_USE=true gateways reject proofs without a consumeDigest.
-  // TODO: replace this block with `gateState.consumeAndBuildToken(...)` once
-  //       @meddleware/walrus-relay ≥ 0.1.6 is installed.
-  let authToken: string | undefined
-  if (gate && gateState.hasAccess.value === true && gateState.nftId.value) {
-    const challenge = await fetchChallenge(opts.relayHost)
-    const consumeTx = gateState.buildConsume(gateState.nftId.value, challenge.nonce)
-    const consumeResult = await executor.signAndExecute(consumeTx)
-    if (consumeResult.digest) await executor.waitForTransaction(consumeResult.digest).catch(() => {})
-    authToken = await buildAccessProof({
-      address: account.value.address,
-      challenge,
-      sign: signPersonalMessage,
-      consumeDigest: consumeResult.digest,
-    })
+  // Ungated relay: no consume, straight upload.
+  if (!(gate && gateState.hasAccess.value === true && gateState.nftId.value)) {
+    return runBlobUpload(uploadDeps(bytes, opts, executor, undefined))
   }
 
-  return runBlobUpload({
+  const nftId = gateState.nftId.value
+  const key = consumeStorageKey(NETWORK, gate.gateId, address)
+  const resolve = (forceFresh: boolean) =>
+    resolveGatedAuthToken({
+      storage: window.localStorage,
+      key,
+      relayHost: opts.relayHost,
+      address,
+      nftId,
+      fetchChallenge,
+      buildConsume: (id, nonce) => gateState.buildConsume(id, nonce),
+      signAndExecute: (tx) => executor.signAndExecute(tx),
+      waitForTransaction: (digest) => executor.waitForTransaction(digest),
+      buildAccessProof,
+      sign: signPersonalMessage,
+      forceFresh,
+    })
+
+  try {
+    const authToken = await resolve(false)
+    const result = await runBlobUpload(uploadDeps(bytes, opts, executor, authToken))
+    window.localStorage.removeItem(key) // upload succeeded → the use is now spent
+    return result
+  } catch (e) {
+    if (!isRedeemedConflict(e)) throw e // transient failure → keep the digest so the next try resumes
+    // The stored consume was already redeemed (a prior upload actually landed). Clear it and spend
+    // one fresh use for this new upload.
+    window.localStorage.removeItem(key)
+    const authToken = await resolve(true)
+    const result = await runBlobUpload(uploadDeps(bytes, opts, executor, authToken))
+    window.localStorage.removeItem(key)
+    return result
+  }
+}
+
+/** Assemble the register→upload→certify inputs for {@link runBlobUpload}. */
+function uploadDeps(
+  bytes: Uint8Array,
+  opts: { relayHost: string; onStatus: (s: string) => void },
+  executor: Awaited<ReturnType<typeof buildExecutor>>,
+  authToken: string | undefined,
+) {
+  if (!account.value) throw new Error('Connect your wallet first.')
+  return {
     bytes,
     network: NETWORK,
     relayHost: opts.relayHost,
@@ -92,7 +128,7 @@ async function performUpload(
     suiClient: getSuiClient(),
     authToken,
     onStatus: opts.onStatus,
-  })
+  }
 }
 
 const ownedBlobs = useOwnedBlobs()

@@ -41,6 +41,7 @@ give operators control over their tip ceiling.
 | `src/index.ts` | Library entry — exports `WalrusView` for the dashboard to render inline |
 | `src/config.ts` | Env var reading, relay hosts, access gate config parsing |
 | `src/wallet.ts` | Thin shim over `@meddleware/wallet-adapter` binding walrus-ui's `RPC_URLS`; re-exports `useWallet` / `getSuiClient` / `buildExecutor` / `Executor` |
+| `src/access-resume.ts` | Single-use consume persistence/resume: stores the `consumeDigest` in `localStorage` and reuses it on retry/reload so an interrupted upload never burns an NFT use (the gateway treats the digest as the one-time redemption token). Cleared on success; re-consumes only on a `409 redeemed`. |
 | `src/components/MyBlobs.vue` | Owned blob listing and lifetime extension |
 
 ## Dual app + library
