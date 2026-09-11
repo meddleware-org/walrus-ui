@@ -1,7 +1,7 @@
 // Unit tests for the extracted blob-upload orchestration. A fake walrus-client module is injected
 // via loadWalrusClient, so no wasm/network is touched — we assert step order, tx wiring, and result.
 import { describe, it, expect, vi } from 'vitest'
-import { runBlobUpload, type WalrusClientModule, type UploadResumeState } from '../src/upload-flow.js'
+import { runBlobUpload, type WalrusClientModule } from '../src/upload-flow.js'
 
 function makeModule() {
   const steps: string[] = []
@@ -104,23 +104,22 @@ describe('runBlobUpload', () => {
     expect(certTx.setSenderIfNotSet).toHaveBeenCalledWith('0xabc')
   })
 
-  it('onRegistered hands back the flow + register digest on a fresh run (R2 resume point)', async () => {
-    const { mod, flow } = makeModule()
-    let captured: UploadResumeState | undefined
+  it('onRegistered hands back the register digest on a fresh run (persist point for resume)', async () => {
+    const { mod } = makeModule()
+    let captured: string | undefined
     await runBlobUpload({
       ...baseDeps,
       executor: makeExecutor(),
       onStatus: () => {},
       loadWalrusClient: async () => mod,
-      onRegistered: (s) => {
-        captured = s
+      onRegistered: (digest) => {
+        captured = digest
       },
     })
-    expect(captured?.flow).toBe(flow)
-    expect(captured?.registerDigest).toMatch(/^dig-/)
+    expect(captured).toMatch(/^dig-/)
   })
 
-  it('resume skips encode + register and reuses the flow (no new client, no re-register)', async () => {
+  it('resumeRegisterDigest skips the register tx but still encodes + uploads with the digest', async () => {
     const { mod, flow, steps } = makeModule()
     const executor = makeExecutor()
     const res = await runBlobUpload({
@@ -128,12 +127,12 @@ describe('runBlobUpload', () => {
       executor,
       onStatus: () => {},
       loadWalrusClient: async () => mod,
-      resume: { flow, registerDigest: 'reg-dig' } as UploadResumeState,
+      resumeRegisterDigest: 'reg-dig',
     })
-    expect(steps).toEqual(['upload', 'certify']) // no encode / register
-    expect(mod.createWalrusClient).not.toHaveBeenCalled()
-    expect(mod.createBlobUploadFlow).not.toHaveBeenCalled()
-    expect(flow.upload).toHaveBeenCalledWith({ digest: 'reg-dig' })
+    // Encoding still runs (re-derives slivers for the re-selected file); the register tx is skipped.
+    expect(steps).toEqual(['encode', 'upload', 'certify'])
+    expect(flow.register).not.toHaveBeenCalled()
+    expect(flow.upload).toHaveBeenCalledWith({ digest: 'reg-dig', deletable: false })
     expect(executor.signAndExecute).toHaveBeenCalledTimes(1) // only certify (no register)
     expect(res.blobId).toBe('BLOB123')
   })

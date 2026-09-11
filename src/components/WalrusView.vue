@@ -11,15 +11,24 @@ import {
   MAX_SINGLE_RESERVATION_EPOCHS,
 } from '@meddleware/walrus-relay'
 import type { UploadResult } from '@meddleware/walrus-relay'
-import { CopyableAddress, ExplorerLink, suiExplorerUrl } from '@meddleware/ui'
+import { CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
 import { useWallet, getSuiClient } from '../wallet.js'
 import { fetchChallenge, buildAccessProof } from '@meddleware/nft-gate-client'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist, walruscanBlobUrl } from '../config.js'
-import { runBlobUpload, type UploadResumeState } from '../upload-flow.js'
-import { consumeStorageKey, isRedeemedConflict, resolveGatedAuthToken } from '../access-resume.js'
+import { runBlobUpload } from '../upload-flow.js'
+import {
+  consumeStorageKey,
+  isRedeemedConflict,
+  resolveGatedAuthToken,
+  registerStorageKey,
+  contentKey,
+  loadRegisterResume,
+  saveRegisterResume,
+  clearRegisterResume,
+} from '../access-resume.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
@@ -52,30 +61,17 @@ async function onPurchase(): Promise<void> {
   }
 }
 
-// The relay auth token for the current attempt. The walrus client reads it PER REQUEST (a provider),
-// so a retained flow resumed after a failure presents a fresh challenge signature. Undefined ⇒
-// ungated (no header).
-const authTokenRef = ref<string | undefined>(undefined)
-// A same-session registered blob retained after a failed upload, keyed by file content, so a retry
-// resumes from the relay upload instead of re-registering (no new WAL/gas). Cleared on success or
-// when a resumed attempt itself fails (fall back to a fresh full upload).
-const uploadSession = ref<{ key: string; state: UploadResumeState } | null>(null)
-
-/** Cheap content key (length + head/tail bytes) to match a retry to the same selected file. */
-function contentKey(bytes: Uint8Array): string {
-  const head = Array.from(bytes.slice(0, 16)).join(',')
-  const tail = Array.from(bytes.slice(-16)).join(',')
-  return `${bytes.length}:${head}:${tail}`
-}
-
 // Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
 // register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure gathers
-// the wallet-bound inputs and manages two resume layers so an interrupted upload wastes nothing:
+// the wallet-bound inputs and manages two resume layers so an interrupted upload wastes nothing —
+// both persisted in localStorage, so they survive a page reload once the same file is re-selected:
 //   1. Single-use consume: the relay treats the permanent on-chain `consumeDigest` as the one-time
 //      redemption token, so a use is only spent when an upload succeeds. The digest is persisted and
 //      reused across retries/reload (re-signing a fresh challenge is free); cleared on success.
-//   2. Walrus flow (same session): a registered-but-not-uploaded blob is retained and reused on a
-//      retry of the same file, skipping re-encode/re-register (no new WAL/gas).
+//   2. Walrus register: a registered-but-not-uploaded blob is resumed by its persisted register
+//      digest (matched to the re-selected file by content hash), skipping the register transaction
+//      (no new WAL/gas). Cleared on success, or when a resumed attempt itself fails (fall back to a
+//      fresh register).
 async function performUpload(
   bytes: Uint8Array,
   opts: { relayHost: string; onStatus: (s: string) => void },
@@ -84,83 +80,73 @@ async function performUpload(
   const executor = await buildExecutor()
   const address = account.value.address
   const key = contentKey(bytes)
+  const storage = window.localStorage
 
   const gated = !!(gate && gateState.hasAccess.value === true && gateState.nftId.value)
   const consumeKey = gate ? consumeStorageKey(NETWORK, gate.gateId, address) : null
+  const regKey = registerStorageKey(NETWORK, address)
 
-  // Resolve this attempt's relay token (gated only) and stash it where the client reads it.
-  async function setToken(forceFresh: boolean): Promise<void> {
-    if (!gated) {
-      authTokenRef.value = undefined
-      return
+  // Resolve this attempt's relay token (gated only); reuses a stored consume, fresh challenge each time.
+  const token = (forceFresh: boolean): Promise<string | undefined> =>
+    !gated
+      ? Promise.resolve(undefined)
+      : resolveGatedAuthToken({
+          storage,
+          key: consumeKey as string,
+          relayHost: opts.relayHost,
+          address,
+          nftId: gateState.nftId.value as string,
+          fetchChallenge,
+          buildConsume: (id, nonce) => gateState.buildConsume(id, nonce),
+          signAndExecute: (tx) => executor.signAndExecute(tx),
+          waitForTransaction: (digest) => executor.waitForTransaction(digest),
+          buildAccessProof,
+          sign: signPersonalMessage,
+          forceFresh,
+        })
+
+  const runOnce = async (authToken: string | undefined): Promise<UploadResult> => {
+    // Resume the register step iff a digest was saved for THIS exact file (survives reload).
+    const resumeRegisterDigest = loadRegisterResume(storage, regKey, key) ?? undefined
+    try {
+      const r = await runBlobUpload({
+        bytes,
+        network: NETWORK,
+        relayHost: opts.relayHost,
+        address,
+        wasmUrl: walrusWasmUrl,
+        maxTipMist: uploadRelayMaxTipMist(),
+        epochs: MAX_SINGLE_RESERVATION_EPOCHS,
+        executor,
+        suiClient: getSuiClient(),
+        authToken,
+        onStatus: opts.onStatus,
+        resumeRegisterDigest,
+        onRegistered: (digest) => saveRegisterResume(storage, regKey, key, digest),
+      })
+      // Success → clear both resume layers (the use is now genuinely spent for an upload).
+      clearRegisterResume(storage, regKey)
+      if (consumeKey) storage.removeItem(consumeKey)
+      return r
+    } catch (e) {
+      // A resumed attempt that fails drops the saved register digest so the next try does a full
+      // fresh register (never worse than today). A non-resumed failure keeps the digest that
+      // onRegistered saved, so the next try (or a reload + re-select) resumes without re-registering.
+      if (resumeRegisterDigest !== undefined) clearRegisterResume(storage, regKey)
+      throw e
     }
-    authTokenRef.value = await resolveGatedAuthToken({
-      storage: window.localStorage,
-      key: consumeKey as string,
-      relayHost: opts.relayHost,
-      address,
-      nftId: gateState.nftId.value as string,
-      fetchChallenge,
-      buildConsume: (id, nonce) => gateState.buildConsume(id, nonce),
-      signAndExecute: (tx) => executor.signAndExecute(tx),
-      waitForTransaction: (digest) => executor.waitForTransaction(digest),
-      buildAccessProof,
-      sign: signPersonalMessage,
-      forceFresh,
-    })
   }
 
-  const deps = (resume?: UploadResumeState) => ({
-    bytes,
-    network: NETWORK,
-    relayHost: opts.relayHost,
-    address,
-    wasmUrl: walrusWasmUrl,
-    maxTipMist: uploadRelayMaxTipMist(),
-    epochs: MAX_SINGLE_RESERVATION_EPOCHS,
-    executor,
-    suiClient: getSuiClient(),
-    // Provider: resolved per request so a resumed flow uses the fresh token.
-    authToken: () => authTokenRef.value,
-    onStatus: opts.onStatus,
-    resume,
-    onRegistered: (state: UploadResumeState) => {
-      uploadSession.value = { key, state }
-    },
-  })
-
-  const succeed = (r: UploadResult): UploadResult => {
-    uploadSession.value = null
-    if (consumeKey) window.localStorage.removeItem(consumeKey) // use spent only on success
-    return r
-  }
-
-  // Reuse a retained registration for this exact file, if any.
-  const resumeFor = () => (uploadSession.value?.key === key ? uploadSession.value.state : undefined)
-  const wasResuming = resumeFor() !== undefined
-
-  await setToken(false)
   try {
-    return succeed(await runBlobUpload(deps(resumeFor())))
+    return await runOnce(await token(false))
   } catch (e) {
-    // A resumed attempt failed → drop the retained registration so the next try does a full fresh
-    // upload (re-register), guaranteeing behaviour no worse than a non-resumed run.
-    if (wasResuming) uploadSession.value = null
-
     if (gated && isRedeemedConflict(e)) {
       // Stored consume already redeemed (a prior upload actually landed): clear it, spend a fresh
-      // use, and retry — resuming the registered blob if we still hold it.
-      window.localStorage.removeItem(consumeKey as string)
-      await setToken(true)
-      const resume2 = resumeFor()
-      try {
-        return succeed(await runBlobUpload(deps(resume2)))
-      } catch (e2) {
-        if (resume2) uploadSession.value = null
-        throw e2
-      }
+      // use, and retry — resuming the registered blob if one is still saved for this file.
+      storage.removeItem(consumeKey as string)
+      return await runOnce(await token(true))
     }
-    throw e // keep the retained registration so a manual retry resumes
+    throw e // keep the saved register digest so a manual retry / reload resumes
   }
 }
 
@@ -228,6 +214,17 @@ function onSettled(): void {
 
         <!-- Access held (or ungated relay): show the upload form. -->
         <template v-else>
+          <!-- Gated relays spend a use before the file is stored — make the "attempt, not a
+               guarantee" nature explicit, while reassuring that attempts resume. -->
+          <UiNotice v-if="gateState.gateConfigured" type="info" class="use-notice">
+            Uploading spends <strong>one use</strong> of your access NFT (an on-chain step) before
+            the file is stored — it pays for an upload <em>attempt</em>, not a guaranteed upload.
+            Your attempt resumes automatically, even after a page reload if you re-select the same
+            file, so a use is normally not lost. A use is spent without a completed upload only if
+            you abandon the upload entirely, cancel a required wallet approval, or wait long enough
+            that the reserved storage lapses.
+          </UiNotice>
+
           <WalrusUpload
             :hosts="relayHosts(NETWORK)"
             :connected="!!account"
@@ -314,6 +311,12 @@ function onSettled(): void {
   margin-top: 1.5rem;
   color: var(--muted);
   text-align: center;
+}
+
+.use-notice {
+  margin: 1rem 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
 
 .tabs {

@@ -27,20 +27,12 @@ interface BuiltTx {
 export interface BlobUploadFlow {
   encode(): Promise<void>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
-  upload(opts: { digest: string }): Promise<void>
+  // `digest` = the register transaction digest. When resuming without a prior `register()` call on
+  // this flow instance, the SDK accepts the digest + `deletable` to upload against the already
+  // registered blob (see `@mysten/walrus` WriteBlobFlowUploadOptions).
+  upload(opts: { digest: string; deletable?: boolean }): Promise<void>
   certify(): BuiltTx
   getBlob(): Promise<{ blobId: string }>
-}
-
-/**
- * A same-session resume point: a flow whose blob is already registered on-chain, plus the register
- * transaction digest. Passing this to {@link runBlobUpload} skips encode + register (no new WAL/gas)
- * and retries from the relay upload — so an interrupted upload never re-registers. Not serialisable
- * / not for cross-reload use (the flow holds the encoded blob in memory).
- */
-export interface UploadResumeState {
-  flow: BlobUploadFlow
-  registerDigest: string
 }
 
 export interface RunBlobUploadDeps {
@@ -67,20 +59,25 @@ export interface RunBlobUploadDeps {
   /** Lazy loader for the Walrus client module (keeps wasm out of the eager bundle). */
   loadWalrusClient?: () => Promise<WalrusClientModule>
   /**
-   * Resume a prior same-session upload from its registered blob (skips encode + register). Omit for
-   * a fresh upload.
+   * Resume from a blob registered in a PRIOR attempt (this session or a previous page load) by
+   * passing its register transaction digest. The file is re-encoded (client-side, no gas) but the
+   * on-chain `register` transaction is skipped — so an interrupted upload never re-registers (no new
+   * WAL/gas), even across a reload once the same file is re-selected. Omit for a fresh upload.
    */
-  resume?: UploadResumeState
+  resumeRegisterDigest?: string
   /**
-   * Called once the blob is registered (fresh uploads only), handing back the flow + register digest
-   * so the caller can retain them and resume the relay upload after a failure without re-registering.
+   * Called with the register transaction digest immediately after a fresh register succeeds, so the
+   * caller can PERSIST it (e.g. to localStorage) and resume the upload after a failure/reload
+   * without re-registering.
    */
-  onRegistered?: (state: UploadResumeState) => void
+  onRegistered?: (registerDigest: string) => void
 }
 
 /**
- * Register → upload → certify a blob and resolve its id + public URL. Two wallet approvals
- * (register, certify) are requested via `executor`; `onStatus` narrates each step.
+ * Register → upload → certify a blob and resolve its id + public URL. Encoding is always performed
+ * (client-side, no gas); when `resumeRegisterDigest` is supplied the on-chain register transaction
+ * is skipped and the upload proceeds against the already-registered blob. Up to two wallet approvals
+ * (register — skipped on resume — and certify) are requested via `executor`; `onStatus` narrates.
  */
 export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResult> {
   // The real module's flow types are richer than the narrow structural subset we use here, so the
@@ -90,28 +87,26 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
     (async () => (await import('@meddleware/walrus-client')) as unknown as WalrusClientModule)
   const { createWalrusClient, createBlobUploadFlow, walrusBlobUrl } = await load()
 
-  let flow: BlobUploadFlow
+  const client = createWalrusClient({
+    network: deps.network,
+    wasmUrl: deps.wasmUrl,
+    uploadRelayHost: deps.relayHost,
+    uploadRelayAuthToken: deps.authToken,
+    uploadRelayMaxTipMist: deps.maxTipMist,
+  })
+  const flow = createBlobUploadFlow(client, deps.bytes)
+
+  // Encoding is deterministic from the content and costs no gas, so it always runs — including on a
+  // resume, where it re-derives the slivers for the re-selected file.
+  deps.onStatus('Encoding…')
+  await flow.encode()
+
   let registerDigest: string
-
-  if (deps.resume) {
-    // Same-session resume: the blob is already registered on-chain. Skip encode + register (no new
-    // WAL/gas) and retry from the relay upload. The retained flow keeps its registered state; its
-    // client resolves the relay token per request, so a fresh challenge is used on retry.
-    flow = deps.resume.flow
-    registerDigest = deps.resume.registerDigest
+  if (deps.resumeRegisterDigest) {
+    // Resume: the blob was registered in a prior attempt. Skip the register transaction (no new
+    // WAL/gas) and upload against the existing on-chain registration.
+    registerDigest = deps.resumeRegisterDigest
   } else {
-    const client = createWalrusClient({
-      network: deps.network,
-      wasmUrl: deps.wasmUrl,
-      uploadRelayHost: deps.relayHost,
-      uploadRelayAuthToken: deps.authToken,
-      uploadRelayMaxTipMist: deps.maxTipMist,
-    })
-    flow = createBlobUploadFlow(client, deps.bytes)
-
-    deps.onStatus('Encoding…')
-    await flow.encode()
-
     deps.onStatus('Registering blob (approve in wallet)…')
     const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
     regTx.setSenderIfNotSet(deps.address)
@@ -119,12 +114,12 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
     const reg = await deps.executor.signAndExecute(regTx)
     await deps.executor.waitForTransaction(reg.digest)
     registerDigest = reg.digest
-    // Hand the registered flow back so the caller can resume the relay upload after a failure.
-    deps.onRegistered?.({ flow, registerDigest })
+    // Persist point: hand back the digest so the upload can be resumed after a failure/reload.
+    deps.onRegistered?.(registerDigest)
   }
 
   deps.onStatus('Uploading to the relay…')
-  await flow.upload({ digest: registerDigest })
+  await flow.upload({ digest: registerDigest, deletable: false })
 
   deps.onStatus('Certifying (approve in wallet)…')
   const certTx = flow.certify()
