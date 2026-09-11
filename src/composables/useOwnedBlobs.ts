@@ -34,11 +34,14 @@ async function load(address: string | null, opts: { force?: boolean } = {}): Pro
     const { createWalrusClient, fetchOwnedWalrusBlobs } = await import('@meddleware/walrus-client')
     const suiClient = getSuiClient()
     const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    // Blob `endEpoch` is a WALRUS epoch, so compare against the Walrus committee epoch — NOT the
+    // Sui system-state epoch (they are different clocks; the Sui epoch, ~1218 vs ~570, made every
+    // blob read as "expired").
     const [sys, fetched] = await Promise.all([
-      suiClient.getCurrentSystemState(),
+      walrusClient.walrus.systemState(),
       fetchOwnedWalrusBlobs(suiClient, walrusClient, address),
     ])
-    currentEpoch.value = Number(sys.systemState.epoch)
+    currentEpoch.value = Number(sys.committee.epoch)
     blobs.value = fetched.sort((a: OwnedBlob, b: OwnedBlob) => a.endEpoch - b.endEpoch)
     loadedFor.value = address
   } catch (e) {

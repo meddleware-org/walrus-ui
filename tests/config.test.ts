@@ -6,10 +6,18 @@ import {
   relayHosts,
   uploadRelayMaxTipMist,
   accessGate,
+  walruscanBlobUrl,
   DEFAULT_UPLOAD_RELAY_MAX_TIP_MIST,
   PUBLIC_WALRUS_RELAY_HOSTS,
   type EnvSource,
 } from '../src/config.js'
+
+describe('walruscanBlobUrl', () => {
+  it('builds a network-scoped Walruscan blob URL', () => {
+    expect(walruscanBlobUrl('testnet', 'BLOB123')).toBe('https://walruscan.com/testnet/blob/BLOB123')
+    expect(walruscanBlobUrl('mainnet', 'BLOB123')).toBe('https://walruscan.com/mainnet/blob/BLOB123')
+  })
+})
 
 describe('uploadRelayMaxTipMist', () => {
   it('defaults when the env var is unset', () => {

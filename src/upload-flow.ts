@@ -24,12 +24,23 @@ interface BuiltTx {
   build(opts: { client: unknown }): Promise<unknown>
 }
 
-interface BlobUploadFlow {
+export interface BlobUploadFlow {
   encode(): Promise<void>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
   upload(opts: { digest: string }): Promise<void>
   certify(): BuiltTx
   getBlob(): Promise<{ blobId: string }>
+}
+
+/**
+ * A same-session resume point: a flow whose blob is already registered on-chain, plus the register
+ * transaction digest. Passing this to {@link runBlobUpload} skips encode + register (no new WAL/gas)
+ * and retries from the relay upload — so an interrupted upload never re-registers. Not serialisable
+ * / not for cross-reload use (the flow holds the encoded blob in memory).
+ */
+export interface UploadResumeState {
+  flow: BlobUploadFlow
+  registerDigest: string
 }
 
 export interface RunBlobUploadDeps {
@@ -47,11 +58,24 @@ export interface RunBlobUploadDeps {
   executor: UploadExecutor
   /** A Sui client used to `build()` the register/certify transactions. */
   suiClient: unknown
-  /** Optional Bearer proof token for an NFT-gated relay. */
-  authToken?: string
+  /**
+   * Bearer proof token for an NFT-gated relay. May be a provider resolved per request so a resumed
+   * upload presents a fresh challenge signature (see `@meddleware/walrus-client`).
+   */
+  authToken?: string | (() => string | undefined)
   onStatus: (s: string) => void
   /** Lazy loader for the Walrus client module (keeps wasm out of the eager bundle). */
   loadWalrusClient?: () => Promise<WalrusClientModule>
+  /**
+   * Resume a prior same-session upload from its registered blob (skips encode + register). Omit for
+   * a fresh upload.
+   */
+  resume?: UploadResumeState
+  /**
+   * Called once the blob is registered (fresh uploads only), handing back the flow + register digest
+   * so the caller can retain them and resume the relay upload after a failure without re-registering.
+   */
+  onRegistered?: (state: UploadResumeState) => void
 }
 
 /**
@@ -66,27 +90,41 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
     (async () => (await import('@meddleware/walrus-client')) as unknown as WalrusClientModule)
   const { createWalrusClient, createBlobUploadFlow, walrusBlobUrl } = await load()
 
-  const client = createWalrusClient({
-    network: deps.network,
-    wasmUrl: deps.wasmUrl,
-    uploadRelayHost: deps.relayHost,
-    uploadRelayAuthToken: deps.authToken,
-    uploadRelayMaxTipMist: deps.maxTipMist,
-  })
-  const flow = createBlobUploadFlow(client, deps.bytes)
+  let flow: BlobUploadFlow
+  let registerDigest: string
 
-  deps.onStatus('Encoding…')
-  await flow.encode()
+  if (deps.resume) {
+    // Same-session resume: the blob is already registered on-chain. Skip encode + register (no new
+    // WAL/gas) and retry from the relay upload. The retained flow keeps its registered state; its
+    // client resolves the relay token per request, so a fresh challenge is used on retry.
+    flow = deps.resume.flow
+    registerDigest = deps.resume.registerDigest
+  } else {
+    const client = createWalrusClient({
+      network: deps.network,
+      wasmUrl: deps.wasmUrl,
+      uploadRelayHost: deps.relayHost,
+      uploadRelayAuthToken: deps.authToken,
+      uploadRelayMaxTipMist: deps.maxTipMist,
+    })
+    flow = createBlobUploadFlow(client, deps.bytes)
 
-  deps.onStatus('Registering blob (approve in wallet)…')
-  const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
-  regTx.setSenderIfNotSet(deps.address)
-  await regTx.build({ client: deps.suiClient })
-  const reg = await deps.executor.signAndExecute(regTx)
-  await deps.executor.waitForTransaction(reg.digest)
+    deps.onStatus('Encoding…')
+    await flow.encode()
+
+    deps.onStatus('Registering blob (approve in wallet)…')
+    const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
+    regTx.setSenderIfNotSet(deps.address)
+    await regTx.build({ client: deps.suiClient })
+    const reg = await deps.executor.signAndExecute(regTx)
+    await deps.executor.waitForTransaction(reg.digest)
+    registerDigest = reg.digest
+    // Hand the registered flow back so the caller can resume the relay upload after a failure.
+    deps.onRegistered?.({ flow, registerDigest })
+  }
 
   deps.onStatus('Uploading to the relay…')
-  await flow.upload({ digest: reg.digest })
+  await flow.upload({ digest: registerDigest })
 
   deps.onStatus('Certifying (approve in wallet)…')
   const certTx = flow.certify()

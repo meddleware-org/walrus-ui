@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { CopyableAddress, ExplorerLink } from '@meddleware/ui'
 import type { OwnedBlob } from '@meddleware/walrus-client'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import type { Executor } from '../wallet.js'
-import { NETWORK } from '../config.js'
+import { NETWORK, walruscanBlobUrl } from '../config.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 
 const props = defineProps<{
@@ -92,7 +93,15 @@ watch(() => props.address, (addr) => void load(addr))
           :key="blob.objectId"
           :class="{ warn: blob.endEpoch - currentEpoch < EXPIRY_WARN_EPOCHS }"
         >
-          <td class="mono">{{ blob.blobId.slice(0, 12) }}…</td>
+          <td>
+            <CopyableAddress :address="blob.blobId" label="Copy blob ID">
+              <ExplorerLink
+                :href="walruscanBlobUrl(NETWORK, blob.blobId)"
+                :value="blob.blobId"
+                :chars="[8, 6]"
+              />
+            </CopyableAddress>
+          </td>
           <td>{{ (blob.size / 1024).toFixed(1) }} KB</td>
           <td>
             epoch {{ blob.endEpoch }}

@@ -34,6 +34,14 @@ export function relayHosts(network: WalrusNetwork): { operator: string; public: 
   return { operator: OPERATOR_RELAY_HOSTS[network], public: PUBLIC_WALRUS_RELAY_HOSTS[network] }
 }
 
+/**
+ * Walruscan explorer URL for a blob. A Walrus blob id is not a Sui object, so it links to the
+ * Walrus-native explorer rather than a Sui explorer (SuiVision handles Sui entities elsewhere).
+ */
+export function walruscanBlobUrl(network: WalrusNetwork, blobId: string): string {
+  return `https://walruscan.com/${network}/blob/${blobId}`
+}
+
 /** Default relay tip ceiling (MIST) when `VITE_UPLOAD_RELAY_MAX_TIP_MIST` is unset (0.5 SUI). */
 export const DEFAULT_UPLOAD_RELAY_MAX_TIP_MIST = 500_000_000
 
