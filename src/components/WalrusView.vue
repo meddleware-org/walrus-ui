@@ -10,7 +10,7 @@ import {
   useAccessGate,
   MAX_SINGLE_RESERVATION_EPOCHS,
 } from '@meddleware/walrus-relay'
-import type { UploadResult } from '@meddleware/walrus-relay'
+import type { UploadResult, UploadProgress } from '@meddleware/walrus-relay'
 import { CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
@@ -67,7 +67,7 @@ async function onPurchase(): Promise<void> {
 // upload-flow.ts). Reusing a prior registration is what produced "the received transaction is too old".
 async function performUpload(
   bytes: Uint8Array,
-  opts: { relayHost: string; onStatus: (s: string) => void },
+  opts: { relayHost: string; onStatus: (s: string | UploadProgress) => void },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
   const executor = await buildExecutor()
@@ -76,6 +76,10 @@ async function performUpload(
 
   const gated = !!(gate && gateState.hasAccess.value === true && gateState.nftId.value)
   const consumeKey = gate ? consumeStorageKey(NETWORK, gate.gateId, address) : null
+
+  // Gated uploads spend one NFT use on-chain before the core flow — surface it as the leading
+  // "Access" step so the stepper reflects the extra wallet approval (a reused consume is instant).
+  if (gated) opts.onStatus({ step: 'access', detail: 'Confirming access…' })
 
   // Resolve this attempt's relay token (gated only); reuses a stored consume, fresh challenge each time.
   const token = (forceFresh: boolean): Promise<string | undefined> =>

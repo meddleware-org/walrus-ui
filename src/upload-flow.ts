@@ -11,7 +11,7 @@
 // can't be reused across attempts — reusing a prior/discovered registration (localStorage or on-chain
 // discovery) hands the relay an old tx with a non-matching nonce. Each attempt re-encodes (free) and
 // registers fresh so the tip+nonce the relay verifies is always recent.
-import type { UploadResult } from '@meddleware/walrus-relay'
+import type { UploadResult, UploadProgress } from '@meddleware/walrus-relay'
 
 /** Minimal transaction executor — the structural subset App.vue's wallet executor already provides. */
 export interface UploadExecutor {
@@ -62,7 +62,8 @@ export interface RunBlobUploadDeps {
    * upload presents a fresh challenge signature (see `@meddleware/walrus-client`).
    */
   authToken?: string | (() => string | undefined)
-  onStatus: (s: string) => void
+  /** Structured step progress; drives the stepped indicator in the WalrusUpload widget. */
+  onStatus: (p: UploadProgress) => void
   /** Lazy loader for the Walrus client module (keeps wasm out of the eager bundle). */
   loadWalrusClient?: () => Promise<WalrusClientModule>
 }
@@ -90,20 +91,20 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   })
   const flow = createBlobUploadFlow(client, deps.bytes)
 
-  deps.onStatus('Encoding…')
+  deps.onStatus({ step: 'encode', detail: 'Encoding…' })
   await flow.encode()
 
-  deps.onStatus('Registering blob (approve in wallet)…')
+  deps.onStatus({ step: 'register', detail: 'Registering blob (approve in wallet)…' })
   const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
   regTx.setSenderIfNotSet(deps.address)
   await regTx.build({ client: deps.suiClient })
   const reg = await deps.executor.signAndExecute(regTx)
   await deps.executor.waitForTransaction(reg.digest)
 
-  deps.onStatus('Uploading to the relay…')
+  deps.onStatus({ step: 'upload', detail: 'Uploading to the relay…' })
   await flow.upload({ digest: reg.digest, deletable: false })
 
-  deps.onStatus('Certifying (approve in wallet)…')
+  deps.onStatus({ step: 'certify', detail: 'Certifying (approve in wallet)…' })
   const certTx = flow.certify()
   certTx.setSenderIfNotSet(deps.address)
   await certTx.build({ client: deps.suiClient })

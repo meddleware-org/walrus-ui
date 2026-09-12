@@ -50,12 +50,12 @@ describe('runBlobUpload', () => {
   it('runs encode → register → upload → certify and resolves id + url + digest', async () => {
     const { mod, steps } = makeModule()
     const executor = makeExecutor()
-    const status: string[] = []
+    const progress: { step: string; detail?: string }[] = []
 
     const res = await runBlobUpload({
       ...baseDeps,
       executor,
-      onStatus: (s) => status.push(s),
+      onStatus: (p) => progress.push(p),
       loadWalrusClient: async () => mod,
     })
 
@@ -68,8 +68,9 @@ describe('runBlobUpload', () => {
     // two wallet approvals: register + certify
     expect(executor.signAndExecute).toHaveBeenCalledTimes(2)
     expect(executor.waitForTransaction).toHaveBeenCalledTimes(2)
-    // status narration reached the user for each phase
-    expect(status.length).toBeGreaterThanOrEqual(4)
+    // structured step progress reached the user for each phase, in journey order, with detail text.
+    expect(progress.map((p) => p.step)).toEqual(['encode', 'register', 'upload', 'certify'])
+    expect(progress.every((p) => typeof p.detail === 'string' && p.detail.length > 0)).toBe(true)
   })
 
   it('always registers fresh and uploads with the register tx digest (never a reused digest)', async () => {
