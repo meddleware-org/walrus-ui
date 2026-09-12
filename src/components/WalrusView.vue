@@ -61,10 +61,26 @@ async function onPurchase(): Promise<void> {
   }
 }
 
+// On-chain resume discovery: given the encoded blobId, find an already-registered, uncertified blob
+// owned by `owner` and return its register digest, so an interrupted upload can resume WITHOUT a
+// local pointer (robust to cache-clear / new device / incognito). Best-effort: any failure falls
+// through to a fresh register. The walrus client is loaded lazily to keep it out of the eager graph.
+async function discoverRegistration(owner: string, blobId: string): Promise<string | undefined> {
+  try {
+    const { createWalrusClient, findUncertifiedRegisteredBlob } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const found = await findUncertifiedRegisteredBlob(getSuiClient(), walrusClient, owner, blobId)
+    return found?.registerDigest
+  } catch {
+    return undefined
+  }
+}
+
 // Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
 // register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure gathers
 // the wallet-bound inputs and manages two resume layers so an interrupted upload wastes nothing —
-// both persisted in localStorage, so they survive a page reload once the same file is re-selected:
+// both persisted in localStorage (fast path) and rediscoverable on-chain (fallback), so they
+// survive a page reload — and even a cache-clear — once the same file is re-selected:
 //   1. Single-use consume: the relay treats the permanent on-chain `consumeDigest` as the one-time
 //      redemption token, so a use is only spent when an upload succeeds. The digest is persisted and
 //      reused across retries/reload (re-signing a fresh challenge is free); cleared on success.
@@ -122,6 +138,9 @@ async function performUpload(
         authToken,
         onStatus: opts.onStatus,
         resumeRegisterDigest,
+        // On-chain fallback when the local pointer is missing (cache-clear / new device): find an
+        // already-registered, uncertified blob for this content and resume from it — gas-free.
+        discoverRegisterDigest: (blobId) => discoverRegistration(address, blobId),
         onRegistered: (digest) => saveRegisterResume(storage, regKey, key, digest),
       })
       // Success → clear both resume layers (the use is now genuinely spent for an upload).
@@ -214,15 +233,15 @@ function onSettled(): void {
 
         <!-- Access held (or ungated relay): show the upload form. -->
         <template v-else>
-          <!-- Gated relays spend a use before the file is stored — make the "attempt, not a
+          <!-- Gated relays spend a credit before the file is stored — make the "attempt, not a
                guarantee" nature explicit, while reassuring that attempts resume. -->
-          <UiNotice v-if="gateState.gateConfigured" type="info" class="use-notice">
-            Uploading spends <strong>one use</strong> of your access NFT (an on-chain step) before
-            the file is stored — it pays for an upload <em>attempt</em>, not a guaranteed upload.
-            Your attempt resumes automatically, even after a page reload if you re-select the same
-            file, so a use is normally not lost. A use is spent without a completed upload only if
-            you abandon the upload entirely, cancel a required wallet approval, or wait long enough
-            that the reserved storage lapses.
+          <UiNotice v-if="gateState.gateConfigured" type="info" class="credit-notice">
+            Uploading spends <strong>one credit</strong> from your access NFT (an on-chain step)
+            before the file is stored — it pays for an upload <em>attempt</em>, not a guaranteed
+            upload. Your attempt resumes automatically, even after a page reload if you re-select
+            the same file, so a credit is normally not lost. A credit is spent without a completed
+            upload only if you abandon the upload entirely, cancel a required wallet approval, or
+            wait long enough that the reserved storage lapses.
           </UiNotice>
 
           <WalrusUpload
@@ -313,7 +332,7 @@ function onSettled(): void {
   text-align: center;
 }
 
-.use-notice {
+.credit-notice {
   margin: 1rem 0;
   font-size: 0.85rem;
   line-height: 1.5;

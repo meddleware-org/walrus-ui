@@ -25,7 +25,9 @@ interface BuiltTx {
 }
 
 export interface BlobUploadFlow {
-  encode(): Promise<void>
+  // The SDK `encode()` returns a `WriteBlobStepEncoded`; we use its deterministic `blobId` to look
+  // up an existing on-chain registration for the same content (resume discovery).
+  encode(): Promise<{ blobId: string }>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
   // `digest` = the register transaction digest. When resuming without a prior `register()` call on
   // this flow instance, the SDK accepts the digest + `deletable` to upload against the already
@@ -66,6 +68,13 @@ export interface RunBlobUploadDeps {
    */
   resumeRegisterDigest?: string
   /**
+   * On-chain resume fallback: called with the encoded `blobId` when no `resumeRegisterDigest` was
+   * supplied. Returns the register digest of an already-registered, uncertified on-chain blob for
+   * this content (or `undefined`). This makes resume robust to a lost local pointer (cache-clear /
+   * new device) — the registration is discovered on-chain rather than remembered client-side.
+   */
+  discoverRegisterDigest?: (blobId: string) => Promise<string | undefined>
+  /**
    * Called with the register transaction digest immediately after a fresh register succeeds, so the
    * caller can PERSIST it (e.g. to localStorage) and resume the upload after a failure/reload
    * without re-registering.
@@ -97,16 +106,19 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   const flow = createBlobUploadFlow(client, deps.bytes)
 
   // Encoding is deterministic from the content and costs no gas, so it always runs — including on a
-  // resume, where it re-derives the slivers for the re-selected file.
+  // resume, where it re-derives the slivers for the re-selected file (and yields the blobId used
+  // for on-chain resume discovery).
   deps.onStatus('Encoding…')
-  await flow.encode()
+  const { blobId } = await flow.encode()
 
-  let registerDigest: string
-  if (deps.resumeRegisterDigest) {
-    // Resume: the blob was registered in a prior attempt. Skip the register transaction (no new
-    // WAL/gas) and upload against the existing on-chain registration.
-    registerDigest = deps.resumeRegisterDigest
-  } else {
+  // Resolve a resume point: a caller-provided digest (localStorage fast path) or, failing that, an
+  // on-chain lookup by blobId (robust to a lost local pointer). Either skips the register tx.
+  let registerDigest = deps.resumeRegisterDigest
+  if (registerDigest === undefined && deps.discoverRegisterDigest) {
+    registerDigest = (await deps.discoverRegisterDigest(blobId)) ?? undefined
+  }
+
+  if (registerDigest === undefined) {
     deps.onStatus('Registering blob (approve in wallet)…')
     const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
     regTx.setSenderIfNotSet(deps.address)
