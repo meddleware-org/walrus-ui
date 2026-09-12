@@ -6,6 +6,12 @@ import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import type { Executor } from '../wallet.js'
 import { NETWORK, walruscanBlobUrl } from '../config.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
+import {
+  pendingCertifyKey,
+  loadPendingCertifies,
+  clearPendingCertify,
+  type PendingCertify,
+} from '../certify-resume.js'
 
 const props = defineProps<{
   /** Connected wallet address whose owned blobs to list; `null` when no wallet is connected. */
@@ -18,6 +24,66 @@ const props = defineProps<{
 const { blobs, currentEpoch, loading, error, load } = useOwnedBlobs()
 const extending = ref<string | null>(null)
 const extendStatus = ref<Record<string, string>>({})
+
+// Pending certifications: blobs uploaded + paid for but not yet certified (the certify prompt was
+// dismissed). Persisted by the upload flow, keyed by blobObjectId; resumable here without re-upload.
+const pending = ref<Record<string, PendingCertify>>({})
+const certifying = ref<string | null>(null)
+const certifyStatus = ref<Record<string, string>>({})
+
+/** The pending-certify entry for a blob, if it's uncertified and we hold its certificate. */
+function pendingFor(blob: OwnedBlob): PendingCertify | null {
+  return !blob.certified ? (pending.value[blob.objectId] ?? null) : null
+}
+
+/** Reload the pending map from storage, dropping entries whose blob is already certified. */
+function refreshPending(): void {
+  if (!props.address) {
+    pending.value = {}
+    return
+  }
+  const key = pendingCertifyKey(NETWORK, props.address)
+  const map = loadPendingCertifies(window.localStorage, key)
+  // Housekeeping: a blob certified elsewhere no longer needs a stored certificate.
+  for (const blob of blobs.value) {
+    if (blob.certified && blob.objectId in map) {
+      clearPendingCertify(window.localStorage, key, blob.objectId)
+      delete map[blob.objectId]
+    }
+  }
+  pending.value = map
+}
+
+async function certifyBlob(blob: OwnedBlob): Promise<void> {
+  const entry = pendingFor(blob)
+  if (!entry || !props.address) return
+  certifying.value = blob.objectId
+  certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: 'Building transaction…' }
+  try {
+    const { createWalrusClient, certifyBlobTransaction } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const tx = certifyBlobTransaction(walrusClient, {
+      blobId: entry.blobId,
+      blobObjectId: entry.blobObjectId,
+      certificate: entry.certificate,
+      deletable: entry.deletable,
+    })
+    const executor = await props.buildExecutor()
+    certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: 'Approve in wallet…' }
+    const { digest } = await executor.signAndExecute(tx)
+    await executor.waitForTransaction(digest)
+    clearPendingCertify(window.localStorage, pendingCertifyKey(NETWORK, props.address), blob.objectId)
+    certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: `Certified ✓ (${digest.slice(0, 8)}…)` }
+    await refresh() // reflect certified = ✓
+  } catch (e) {
+    certifyStatus.value = {
+      ...certifyStatus.value,
+      [blob.objectId]: `Failed: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  } finally {
+    certifying.value = null
+  }
+}
 
 const EXPIRY_WARN_EPOCHS = 10
 const EPOCHS_PER_DAY = 1 / 0.038 // ~1 Walrus epoch ≈ 38 minutes on testnet
@@ -62,6 +128,9 @@ async function extendBlob(blob: OwnedBlob): Promise<void> {
 // The composable no-ops when the list is already cached for this address, so re-mounting is cheap.
 onMounted(() => void load(props.address))
 watch(() => props.address, (addr) => void load(addr))
+// Re-derive pending certifications whenever the list refreshes or the account changes.
+watch(blobs, () => refreshPending())
+watch(() => props.address, () => refreshPending())
 </script>
 
 <template>
@@ -107,8 +176,30 @@ watch(() => props.address, (addr) => void load(addr))
             epoch {{ blob.endEpoch }}
             <span class="approx">(≈{{ epochsToApproxDays(blob.endEpoch - currentEpoch) }})</span>
           </td>
-          <td>{{ blob.certified ? '✓' : '—' }}</td>
           <td>
+            <span v-if="blob.certified">✓</span>
+            <span v-else-if="pendingFor(blob)" class="pending-badge" title="Uploaded but not certified">
+              pending
+            </span>
+            <span v-else>—</span>
+          </td>
+          <td class="actions">
+            <!-- Certify: the blob was uploaded + paid for but not certified; finish it (no re-upload). -->
+            <template v-if="pendingFor(blob)">
+              <span v-if="certifyStatus[blob.objectId]" class="ext-status">
+                {{ certifyStatus[blob.objectId] }}
+              </span>
+              <button
+                v-else
+                type="button"
+                class="certify-btn"
+                :disabled="certifying === blob.objectId"
+                @click="certifyBlob(blob)"
+              >
+                Certify
+              </button>
+            </template>
+
             <span v-if="extendStatus[blob.objectId]" class="ext-status">
               {{ extendStatus[blob.objectId] }}
             </span>
@@ -177,5 +268,20 @@ watch(() => props.address, (addr) => void load(addr))
 .ext-status {
   font-size: 0.85rem;
   color: var(--mw-color-text-muted, #888);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.certify-btn {
+  border-color: var(--accent, #6366f1);
+  color: var(--accent, #6366f1);
+}
+.pending-badge {
+  font-size: 0.78rem;
+  color: var(--accent, #6366f1);
+  font-weight: 600;
 }
 </style>

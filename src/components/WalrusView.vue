@@ -25,6 +25,11 @@ import {
   isRedeemedConflict,
   resolveGatedAuthToken,
 } from '../access-resume.js'
+import {
+  pendingCertifyKey,
+  savePendingCertify,
+  clearPendingCertify,
+} from '../certify-resume.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
@@ -115,6 +120,12 @@ async function performUpload(
         suiClient: getSuiClient(),
         authToken,
         onStatus: opts.onStatus,
+        // Persist the certificate the moment the upload lands, and drop it once certified — so a
+        // dismissed certify can be finished from My Blobs after a tab switch or reload.
+        onUploaded: (info) =>
+          savePendingCertify(storage, pendingCertifyKey(NETWORK, address), info),
+        onCertified: (blobObjectId) =>
+          clearPendingCertify(storage, pendingCertifyKey(NETWORK, address), blobObjectId),
       })
       // Success → clear the consume layer (the use is now genuinely spent for an upload).
       if (consumeKey) storage.removeItem(consumeKey)

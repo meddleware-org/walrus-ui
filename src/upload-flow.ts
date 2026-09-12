@@ -38,7 +38,13 @@ export interface BlobUploadFlow {
   encode(): Promise<void>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
   // `digest` = the register transaction digest produced by the register tx executed this attempt.
-  upload(opts: { digest: string; deletable?: boolean }): Promise<void>
+  // Returns the SDK "uploaded" step, including the on-chain `blobObjectId` and the base64
+  // availability `certificate` needed to certify later (persisted so certify can resume).
+  upload(opts: { digest: string; deletable?: boolean }): Promise<{
+    blobId: string
+    blobObjectId: string
+    certificate: string
+  }>
   certify(): BuiltTx
   getBlob(): Promise<{ blobId: string }>
 }
@@ -67,6 +73,14 @@ export interface RunBlobUploadDeps {
   onStatus: (p: UploadProgress) => void
   /** Lazy loader for the Walrus client module (keeps wasm out of the eager bundle). */
   loadWalrusClient?: () => Promise<WalrusClientModule>
+  /**
+   * Called once the upload has landed (blob registered + stored + paid) but BEFORE certify, with the
+   * data needed to certify later without re-uploading. Persist it so a dismissed certify can be
+   * resumed from My Blobs after a tab switch or reload. Cleared via {@link RunBlobUploadDeps.onCertified}.
+   */
+  onUploaded?: (info: { blobId: string; blobObjectId: string; certificate: string; deletable: boolean }) => void
+  /** Called with the `blobObjectId` once certify succeeds, so the caller can drop the persisted entry. */
+  onCertified?: (blobObjectId: string) => void
 }
 
 /**
@@ -103,7 +117,16 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   await deps.executor.waitForTransaction(reg.digest)
 
   deps.onStatus({ step: 'upload', detail: 'Uploading to the relay…' })
-  await flow.upload({ digest: reg.digest, deletable: false })
+  const uploaded = await flow.upload({ digest: reg.digest, deletable: false })
+
+  // Upload landed (registered + stored + paid). Persist the certificate NOW so certify can be
+  // completed later from My Blobs (after a tab switch / reload) if the user dismisses the prompt.
+  deps.onUploaded?.({
+    blobId: uploaded.blobId,
+    blobObjectId: uploaded.blobObjectId,
+    certificate: uploaded.certificate,
+    deletable: false,
+  })
 
   // Certify is a plain owner tx built from the storage-node certificate the live `flow` now holds
   // (no relay, no tip). If it fails (e.g. the user rejects the prompt) the blob is already registered
@@ -117,6 +140,7 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
     const cert = await deps.executor.signAndExecute(certTx)
     await deps.executor.waitForTransaction(cert.digest)
     const blob = await flow.getBlob()
+    deps.onCertified?.(uploaded.blobObjectId) // certified → drop the persisted pending entry
     return { blobId: blob.blobId, url: walrusBlobUrl(deps.network, blob.blobId), digest: cert.digest }
   }
 

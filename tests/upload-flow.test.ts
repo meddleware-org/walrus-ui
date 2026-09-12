@@ -14,7 +14,10 @@ function makeModule() {
       steps.push('register')
       return regTx
     }),
-    upload: vi.fn(async () => void steps.push('upload')),
+    upload: vi.fn(async () => {
+      steps.push('upload')
+      return { blobId: 'BLOB123', blobObjectId: 'OBJ123', certificate: 'CERT_B64' }
+    }),
     certify: vi.fn(() => {
       steps.push('certify')
       return certTx
@@ -90,6 +93,27 @@ describe('runBlobUpload', () => {
     // upload is given the digest produced by the register tx executed this attempt.
     const regDigest = (await executor.signAndExecute.mock.results[0].value).digest
     expect(flow.upload).toHaveBeenCalledWith({ digest: regDigest, deletable: false })
+  })
+
+  it('persists the certificate on upload (onUploaded) and clears it on certify (onCertified)', async () => {
+    const { mod } = makeModule()
+    const onUploaded = vi.fn()
+    const onCertified = vi.fn()
+    await runBlobUpload({
+      ...baseDeps,
+      executor: makeExecutor(),
+      onStatus: () => {},
+      loadWalrusClient: async () => mod,
+      onUploaded,
+      onCertified,
+    })
+    expect(onUploaded).toHaveBeenCalledWith({
+      blobId: 'BLOB123',
+      blobObjectId: 'OBJ123',
+      certificate: 'CERT_B64',
+      deletable: false,
+    })
+    expect(onCertified).toHaveBeenCalledWith('OBJ123')
   })
 
   it('on a certify failure, throws with a certifyRetry that re-certifies without re-uploading', async () => {
