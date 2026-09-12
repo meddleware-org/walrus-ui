@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { CopyableAddress, ExplorerLink } from '@meddleware/ui'
 import type { OwnedBlob } from '@meddleware/walrus-client'
+import { MAX_SINGLE_RESERVATION_EPOCHS } from '@meddleware/walrus-relay'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import type { Executor } from '../wallet.js'
 import { NETWORK, walruscanBlobUrl } from '../config.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
+import { groupBlobs, expiryLabel, maxExtendableEpochs, type BlobGroup } from '../blob-groups.js'
 import {
   pendingCertifyKey,
   loadPendingCertifies,
@@ -16,24 +18,65 @@ import {
 const props = defineProps<{
   /** Connected wallet address whose owned blobs to list; `null` when no wallet is connected. */
   address: string | null
-  /** Factory that builds a transaction {@link Executor} bound to the connected wallet (for extend). */
+  /** Factory that builds a transaction {@link Executor} bound to the connected wallet. */
   buildExecutor: () => Promise<Executor>
+  /** When set, the matching group is expanded + scrolled into view (from the duplicate-upload flow). */
+  highlightBlobId?: string | null
 }>()
 
 // Shared, session-persistent cache (survives tab switches and inline re-mounts).
 const { blobs, currentEpoch, loading, error, load } = useOwnedBlobs()
-const extending = ref<string | null>(null)
-const extendStatus = ref<Record<string, string>>({})
 
-// Pending certifications: blobs uploaded + paid for but not yet certified (the certify prompt was
-// dismissed). Persisted by the upload flow, keyed by blobObjectId; resumable here without re-upload.
+// One row per blobId; re-uploads of the same content are collapsed into a group's `copies`.
+const groups = computed(() => groupBlobs(blobs.value))
+const expanded = ref<Set<string>>(new Set())
+
+// Pending certifications (uploaded-but-not-certified copies we still hold a certificate for).
 const pending = ref<Record<string, PendingCertify>>({})
-const certifying = ref<string | null>(null)
-const certifyStatus = ref<Record<string, string>>({})
 
-/** The pending-certify entry for a blob, if it's uncertified and we hold its certificate. */
-function pendingFor(blob: OwnedBlob): PendingCertify | null {
-  return !blob.certified ? (pending.value[blob.objectId] ?? null) : null
+// Per-object action state (keyed by Blob objectId), shared by Extend and Certify.
+const busy = ref<string | null>(null)
+const actionStatus = ref<Record<string, string>>({})
+const extendAmount = ref<Record<string, number>>({})
+const extendCostFrost = ref<Record<string, bigint | null>>({})
+
+const MAX = MAX_SINGLE_RESERVATION_EPOCHS
+
+function msg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+/** FROST (1e-9 WAL) → short WAL string. */
+function toWal(frost: bigint): string {
+  return (Number(frost) / 1e9).toFixed(4)
+}
+
+function maxAddable(endEpoch: number): number {
+  return maxExtendableEpochs(endEpoch, currentEpoch.value, MAX)
+}
+
+/** The stored certificate for an uncertified copy, if we can certify it here. */
+function pendingFor(objectId: string): PendingCertify | null {
+  return pending.value[objectId] ?? null
+}
+/** The first pending (certifiable) copy in a group, if any. */
+function groupPendingCopy(g: BlobGroup): OwnedBlob | null {
+  return g.copies.find((c) => !c.certified && pending.value[c.objectId]) ?? null
+}
+/** Status shown in the Certified column for a group. */
+function groupCertStatus(g: BlobGroup): 'certified' | 'pending' | 'none' {
+  if (g.anyCertified) return 'certified'
+  return groupPendingCopy(g) ? 'pending' : 'none'
+}
+
+function toggleExpand(blobId: string): void {
+  const next = new Set(expanded.value)
+  if (next.has(blobId)) next.delete(blobId)
+  else next.add(blobId)
+  expanded.value = next
+}
+
+function refresh(): Promise<void> {
+  return load(props.address, { force: true })
 }
 
 /** Reload the pending map from storage, dropping entries whose blob is already certified. */
@@ -44,7 +87,6 @@ function refreshPending(): void {
   }
   const key = pendingCertifyKey(NETWORK, props.address)
   const map = loadPendingCertifies(window.localStorage, key)
-  // Housekeeping: a blob certified elsewhere no longer needs a stored certificate.
   for (const blob of blobs.value) {
     if (blob.certified && blob.objectId in map) {
       clearPendingCertify(window.localStorage, key, blob.objectId)
@@ -54,11 +96,61 @@ function refreshPending(): void {
   pending.value = map
 }
 
+// ── Extend ──────────────────────────────────────────────────────────────────
+let extendReq: Record<string, number> = {}
+
+// User picked an amount → clamp and (re)price it. We estimate only on interaction, not for every row
+// on load, to avoid spinning up a Walrus client per blob.
+function setExtendAmount(blob: OwnedBlob, value: number | string): void {
+  const max = maxAddable(blob.endEpoch)
+  const v = Math.min(max, Math.max(1, Math.floor(Number(value) || 1)))
+  extendAmount.value = { ...extendAmount.value, [blob.objectId]: v }
+  void estimateExtend(blob, v)
+}
+async function estimateExtend(blob: OwnedBlob, epochs: number): Promise<void> {
+  const id = blob.objectId
+  const token = (extendReq[id] = (extendReq[id] ?? 0) + 1)
+  try {
+    const { createWalrusClient, estimateStorageCost } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    // Extend adds storage only (no one-time write cost), so price the `storageCost` component.
+    const cost = await estimateStorageCost(walrusClient, blob.size, epochs)
+    if (extendReq[id] === token) {
+      extendCostFrost.value = { ...extendCostFrost.value, [id]: cost.storageCost }
+    }
+  } catch {
+    if (extendReq[id] === token) extendCostFrost.value = { ...extendCostFrost.value, [id]: null }
+  }
+}
+
+async function extendBlob(blob: OwnedBlob): Promise<void> {
+  const epochs = extendAmount.value[blob.objectId]
+  if (!epochs || busy.value) return
+  busy.value = blob.objectId
+  actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Building transaction…' }
+  try {
+    const { createWalrusClient, extendBlobLifetimeTransaction } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const tx = await extendBlobLifetimeTransaction(walrusClient, blob.objectId, { epochs })
+    const executor = await props.buildExecutor()
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Approve in wallet…' }
+    const { digest } = await executor.signAndExecute(tx)
+    await executor.waitForTransaction(digest)
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Extended ✓ (${digest.slice(0, 8)}…)` }
+    await refresh()
+  } catch (e) {
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Failed: ${msg(e)}` }
+  } finally {
+    busy.value = null
+  }
+}
+
+// ── Certify (resume a pending upload from its stored certificate) ─────────────
 async function certifyBlob(blob: OwnedBlob): Promise<void> {
-  const entry = pendingFor(blob)
-  if (!entry || !props.address) return
-  certifying.value = blob.objectId
-  certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: 'Building transaction…' }
+  const entry = pendingFor(blob.objectId)
+  if (!entry || !props.address || busy.value) return
+  busy.value = blob.objectId
+  actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Building transaction…' }
   try {
     const { createWalrusClient, certifyBlobTransaction } = await import('@meddleware/walrus-client')
     const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
@@ -69,68 +161,52 @@ async function certifyBlob(blob: OwnedBlob): Promise<void> {
       deletable: entry.deletable,
     })
     const executor = await props.buildExecutor()
-    certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: 'Approve in wallet…' }
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Approve in wallet…' }
     const { digest } = await executor.signAndExecute(tx)
     await executor.waitForTransaction(digest)
     clearPendingCertify(window.localStorage, pendingCertifyKey(NETWORK, props.address), blob.objectId)
-    certifyStatus.value = { ...certifyStatus.value, [blob.objectId]: `Certified ✓ (${digest.slice(0, 8)}…)` }
-    await refresh() // reflect certified = ✓
-  } catch (e) {
-    certifyStatus.value = {
-      ...certifyStatus.value,
-      [blob.objectId]: `Failed: ${e instanceof Error ? e.message : String(e)}`,
-    }
-  } finally {
-    certifying.value = null
-  }
-}
-
-const EXPIRY_WARN_EPOCHS = 10
-const EPOCHS_PER_DAY = 1 / 0.038 // ~1 Walrus epoch ≈ 38 minutes on testnet
-
-function epochsToApproxDays(epochs: number): string {
-  const days = Math.round(epochs * EPOCHS_PER_DAY)
-  if (days <= 0) return 'expired'
-  if (days < 2) return `${days} day`
-  return `${days} days`
-}
-
-/** Force a fresh fetch (Refresh button + after an on-chain-affecting action). */
-function refresh(): Promise<void> {
-  return load(props.address, { force: true })
-}
-
-async function extendBlob(blob: OwnedBlob): Promise<void> {
-  extending.value = blob.objectId
-  extendStatus.value = { ...extendStatus.value, [blob.objectId]: 'Building transaction…' }
-  try {
-    const { createWalrusClient, extendBlobLifetimeTransaction } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
-    const tx = await extendBlobLifetimeTransaction(walrusClient, blob.objectId, { epochs: 10 })
-    const executor = await props.buildExecutor()
-    extendStatus.value = { ...extendStatus.value, [blob.objectId]: 'Approve in wallet…' }
-    const { digest } = await executor.signAndExecute(tx)
-    await executor.waitForTransaction(digest)
-    extendStatus.value = { ...extendStatus.value, [blob.objectId]: `Extended ✓ (${digest.slice(0, 8)}…)` }
-    // Refresh the list so the new endEpoch is visible.
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Certified ✓ (${digest.slice(0, 8)}…)` }
     await refresh()
   } catch (e) {
-    extendStatus.value = {
-      ...extendStatus.value,
-      [blob.objectId]: `Failed: ${e instanceof Error ? e.message : String(e)}`,
-    }
+    actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Failed: ${msg(e)}` }
   } finally {
-    extending.value = null
+    busy.value = null
   }
 }
 
-// Load on first open (fixes "nothing shows until Refresh") and whenever the address changes.
-// The composable no-ops when the list is already cached for this address, so re-mounting is cheap.
+// Load on first open and whenever the address changes; re-derive pending on list/address changes.
 onMounted(() => void load(props.address))
 watch(() => props.address, (addr) => void load(addr))
-// Re-derive pending certifications whenever the list refreshes or the account changes.
 watch(blobs, () => refreshPending())
 watch(() => props.address, () => refreshPending())
+
+// Seed each group's extend amount with a sensible default (+10, clamped) without pricing it — the
+// estimate is fetched on the first user interaction.
+watch(
+  [groups, currentEpoch],
+  () => {
+    for (const g of groups.value) {
+      const b = g.representative
+      const max = maxAddable(b.endEpoch)
+      if (max > 0 && extendAmount.value[b.objectId] === undefined) {
+        extendAmount.value = { ...extendAmount.value, [b.objectId]: Math.min(10, max) }
+      }
+    }
+  },
+  { immediate: true },
+)
+
+// Highlight + expand the group routed from the duplicate-upload dialog.
+watch(
+  () => props.highlightBlobId,
+  async (blobId) => {
+    if (!blobId) return
+    expanded.value = new Set(expanded.value).add(blobId)
+    await nextTick()
+    document.getElementById(`blob-row-${blobId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -144,9 +220,9 @@ watch(() => props.address, () => refreshPending())
 
     <p v-if="!address" class="hint">Connect your wallet to list your Walrus blobs.</p>
     <p v-else-if="error" class="err">{{ error }}</p>
-    <p v-else-if="!loading && blobs.length === 0" class="hint">No Walrus blobs found for this address.</p>
+    <p v-else-if="!loading && groups.length === 0" class="hint">No Walrus blobs found for this address.</p>
 
-    <table v-if="blobs.length" class="blob-table">
+    <table v-if="groups.length" class="blob-table">
       <thead>
         <tr>
           <th>Blob ID</th>
@@ -157,62 +233,101 @@ watch(() => props.address, () => refreshPending())
         </tr>
       </thead>
       <tbody>
-        <tr
-          v-for="blob in blobs"
-          :key="blob.objectId"
-          :class="{ warn: blob.endEpoch - currentEpoch < EXPIRY_WARN_EPOCHS }"
-        >
-          <td>
-            <CopyableAddress :address="blob.blobId" label="Copy blob ID">
-              <ExplorerLink
-                :href="walruscanBlobUrl(NETWORK, blob.blobId)"
-                :value="blob.blobId"
-                :chars="[8, 6]"
-              />
-            </CopyableAddress>
-          </td>
-          <td>{{ (blob.size / 1024).toFixed(1) }} KB</td>
-          <td>
-            epoch {{ blob.endEpoch }}
-            <span class="approx">(≈{{ epochsToApproxDays(blob.endEpoch - currentEpoch) }})</span>
-          </td>
-          <td>
-            <span v-if="blob.certified">✓</span>
-            <span v-else-if="pendingFor(blob)" class="pending-badge" title="Uploaded but not certified">
-              pending
-            </span>
-            <span v-else>—</span>
-          </td>
-          <td class="actions">
-            <!-- Certify: the blob was uploaded + paid for but not certified; finish it (no re-upload). -->
-            <template v-if="pendingFor(blob)">
-              <span v-if="certifyStatus[blob.objectId]" class="ext-status">
-                {{ certifyStatus[blob.objectId] }}
-              </span>
+        <template v-for="g in groups" :key="g.blobId">
+          <tr
+            :id="`blob-row-${g.blobId}`"
+            :class="{ warn: g.maxEndEpoch - currentEpoch < 10, highlight: g.blobId === highlightBlobId }"
+          >
+            <td>
+              <CopyableAddress :address="g.blobId" label="Copy blob ID">
+                <ExplorerLink :href="walruscanBlobUrl(NETWORK, g.blobId)" :value="g.blobId" :chars="[8, 6]" />
+              </CopyableAddress>
               <button
-                v-else
+                v-if="g.copies.length > 1"
+                type="button"
+                class="copies-toggle"
+                @click="toggleExpand(g.blobId)"
+              >
+                {{ expanded.has(g.blobId) ? '▾' : '▸' }} {{ g.copies.length }} copies
+              </button>
+            </td>
+            <td>{{ (g.size / 1024).toFixed(1) }} KB</td>
+            <td>{{ expiryLabel(g.maxEndEpoch, currentEpoch) }}</td>
+            <td>
+              <span v-if="groupCertStatus(g) === 'certified'">✓</span>
+              <span v-else-if="groupCertStatus(g) === 'pending'" class="pending-badge" title="Uploaded but not certified">pending</span>
+              <span v-else>—</span>
+            </td>
+            <td class="actions">
+              <span v-if="actionStatus[g.representative.objectId]" class="act-status">
+                {{ actionStatus[g.representative.objectId] }}
+              </span>
+              <template v-else>
+                <button
+                  v-if="groupPendingCopy(g)"
+                  type="button"
+                  class="certify-btn"
+                  :disabled="!!busy"
+                  @click="certifyBlob(groupPendingCopy(g)!)"
+                >
+                  Certify
+                </button>
+                <span v-if="maxAddable(g.representative.endEpoch) === 0" class="at-max">at max lifetime</span>
+                <span v-else class="extend">
+                  <input
+                    type="number"
+                    min="1"
+                    :max="maxAddable(g.representative.endEpoch)"
+                    :value="extendAmount[g.representative.objectId]"
+                    aria-label="Epochs to add"
+                    @input="setExtendAmount(g.representative, ($event.target as HTMLInputElement).value)"
+                  />
+                  <button type="button" class="preset" @click="setExtendAmount(g.representative, 10)">+10</button>
+                  <button type="button" class="preset" @click="setExtendAmount(g.representative, 25)">+25</button>
+                  <button
+                    type="button"
+                    class="preset"
+                    @click="setExtendAmount(g.representative, maxAddable(g.representative.endEpoch))"
+                  >
+                    Max
+                  </button>
+                  <button type="button" :disabled="!!busy" @click="extendBlob(g.representative)">Extend</button>
+                  <span v-if="extendCostFrost[g.representative.objectId] != null" class="est">
+                    ≈{{ toWal(extendCostFrost[g.representative.objectId]!) }} WAL
+                  </span>
+                </span>
+              </template>
+            </td>
+          </tr>
+
+          <!-- Per-copy detail for grouped duplicates: certify a specific pending copy. -->
+          <tr v-for="c in (expanded.has(g.blobId) ? g.copies : [])" :key="c.objectId" class="copy-row">
+            <td class="copy-obj">
+              <CopyableAddress :address="c.objectId" label="Copy object ID">
+                <span class="mono">{{ c.objectId.slice(0, 10) }}…</span>
+              </CopyableAddress>
+            </td>
+            <td></td>
+            <td>{{ expiryLabel(c.endEpoch, currentEpoch) }}</td>
+            <td>
+              <span v-if="c.certified">✓</span>
+              <span v-else-if="pendingFor(c.objectId)" class="pending-badge">pending</span>
+              <span v-else>—</span>
+            </td>
+            <td class="actions">
+              <span v-if="actionStatus[c.objectId]" class="act-status">{{ actionStatus[c.objectId] }}</span>
+              <button
+                v-else-if="pendingFor(c.objectId)"
                 type="button"
                 class="certify-btn"
-                :disabled="certifying === blob.objectId"
-                @click="certifyBlob(blob)"
+                :disabled="!!busy"
+                @click="certifyBlob(c)"
               >
                 Certify
               </button>
-            </template>
-
-            <span v-if="extendStatus[blob.objectId]" class="ext-status">
-              {{ extendStatus[blob.objectId] }}
-            </span>
-            <button
-              v-else
-              type="button"
-              :disabled="extending === blob.objectId"
-              @click="extendBlob(blob)"
-            >
-              +10 epochs
-            </button>
-          </td>
-        </tr>
+            </td>
+          </tr>
+        </template>
       </tbody>
     </table>
   </section>
@@ -250,6 +365,7 @@ watch(() => props.address, () => refreshPending())
   text-align: left;
   padding: 0.4rem 0.6rem;
   border-bottom: 1px solid var(--mw-color-border, #ddd);
+  vertical-align: top;
 }
 .blob-table th {
   font-weight: 600;
@@ -258,22 +374,49 @@ watch(() => props.address, () => refreshPending())
 .blob-table tr.warn td {
   background: color-mix(in srgb, var(--mw-color-warning, #f90) 8%, transparent);
 }
+.blob-table tr.highlight td {
+  background: color-mix(in srgb, var(--accent, #6366f1) 14%, transparent);
+}
+.copy-row td {
+  background: color-mix(in srgb, var(--mw-color-text-muted, #888) 6%, transparent);
+  font-size: 0.82rem;
+}
+.copies-toggle {
+  display: inline-block;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  padding: 0.05rem 0.4rem;
+}
 .mono {
   font-family: monospace;
 }
-.approx {
-  font-size: 0.8em;
+.actions {
+  white-space: nowrap;
+}
+.extend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.extend input {
+  width: 4rem;
+}
+.preset {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+}
+.est {
+  font-size: 0.78rem;
   color: var(--mw-color-text-muted, #888);
 }
-.ext-status {
+.at-max {
+  font-size: 0.8rem;
+  color: var(--mw-color-text-muted, #888);
+}
+.act-status {
   font-size: 0.85rem;
   color: var(--mw-color-text-muted, #888);
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  align-items: center;
 }
 .certify-btn {
   border-color: var(--accent, #6366f1);

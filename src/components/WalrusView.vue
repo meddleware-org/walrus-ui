@@ -8,9 +8,8 @@ import {
   WalrusUpload,
   AccessGateCta,
   useAccessGate,
-  MAX_SINGLE_RESERVATION_EPOCHS,
 } from '@meddleware/walrus-relay'
-import type { UploadResult, UploadProgress } from '@meddleware/walrus-relay'
+import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
 import { CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
@@ -29,6 +28,7 @@ import {
   pendingCertifyKey,
   savePendingCertify,
   clearPendingCertify,
+  loadPendingCertifies,
 } from '../certify-resume.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
@@ -73,7 +73,12 @@ async function onPurchase(): Promise<void> {
 // upload-flow.ts). Reusing a prior registration is what produced "the received transaction is too old".
 async function performUpload(
   bytes: Uint8Array,
-  opts: { relayHost: string; onStatus: (s: string | UploadProgress) => void },
+  opts: {
+    relayHost: string
+    epochs: number
+    force?: boolean
+    onStatus: (s: string | UploadProgress) => void
+  },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
   const executor = await buildExecutor()
@@ -115,7 +120,9 @@ async function performUpload(
         address,
         wasmUrl: walrusWasmUrl,
         maxTipMist: uploadRelayMaxTipMist(),
-        epochs: MAX_SINGLE_RESERVATION_EPOCHS,
+        epochs: opts.epochs,
+        force: opts.force,
+        findExistingCopy,
         executor,
         suiClient: getSuiClient(),
         authToken,
@@ -149,6 +156,57 @@ async function performUpload(
     }
     throw e
   }
+}
+
+// Precheck (before paying to register): does the wallet already own this exact blob? Returns a
+// `certified` match (offer Extend) or a `pending` one — uncertified but with a saved certificate
+// (offer Certify). Best-effort: any failure returns null so the upload simply proceeds.
+async function findExistingCopy(blobId: string): Promise<ExistingCopy | null> {
+  const address = account.value?.address
+  if (!address) return null
+  try {
+    const { createWalrusClient, fetchOwnedWalrusBlobs } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const [sys, owned] = await Promise.all([
+      walrusClient.walrus.systemState(),
+      fetchOwnedWalrusBlobs(getSuiClient(), walrusClient, address),
+    ])
+    const currentEpoch = Number(sys.committee.epoch)
+    const copies = owned.filter((b) => b.blobId === blobId && b.endEpoch > currentEpoch)
+    const certified = copies.find((b) => b.certified)
+    if (certified) {
+      return { kind: 'certified', blobId, objectId: certified.objectId, endEpoch: certified.endEpoch }
+    }
+    const store = loadPendingCertifies(window.localStorage, pendingCertifyKey(NETWORK, address))
+    const pending = copies.find((b) => !b.certified && b.objectId in store)
+    if (pending) {
+      return { kind: 'pending', blobId, objectId: pending.objectId, endEpoch: pending.endEpoch }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// Injected into the upload widget so it can price a chosen reservation duration (storage is WAL,
+// billed per size × epochs). Returns total cost in FROST, or null on error.
+async function estimateUploadStorageCost(sizeBytes: number, epochs: number): Promise<bigint | null> {
+  try {
+    const { createWalrusClient, estimateStorageCost } = await import('@meddleware/walrus-client')
+    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const cost = await estimateStorageCost(walrusClient, sizeBytes, epochs)
+    return cost.totalCost
+  } catch {
+    return null
+  }
+}
+
+// The user declined a duplicate upload and chose to manage the existing copy: jump to My Blobs and
+// highlight it (the grouped row exposes Extend for certified, Certify for pending).
+const highlightBlobId = ref<string | null>(null)
+function onManageExisting(existing: ExistingCopy): void {
+  highlightBlobId.value = existing.blobId
+  activeTab.value = 'blobs'
 }
 
 const ownedBlobs = useOwnedBlobs()
@@ -231,8 +289,10 @@ function onSettled(): void {
             :connected="!!account"
             :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
             :perform-upload="performUpload"
+            :estimate-storage-cost="estimateUploadStorageCost"
             @uploaded="onUploaded"
             @settled="onSettled"
+            @manage-existing="onManageExisting"
           />
 
           <section v-if="result" class="result">
@@ -269,6 +329,7 @@ function onSettled(): void {
         v-if="activeTab === 'blobs'"
         :address="account?.address ?? null"
         :build-executor="() => buildExecutor()"
+        :highlight-blob-id="highlightBlobId"
       />
     </WalletGuard>
   </div>

@@ -2,14 +2,17 @@
 // via loadWalrusClient, so no wasm/network is touched — we assert step order, tx wiring, and result.
 import { describe, it, expect, vi } from 'vitest'
 import { runBlobUpload, type WalrusClientModule } from '../src/upload-flow.js'
-import { getCertifyRetry } from '@meddleware/walrus-relay'
+import { getCertifyRetry, getDuplicateExisting } from '@meddleware/walrus-relay'
 
 function makeModule() {
   const steps: string[] = []
   const regTx = { setSenderIfNotSet: vi.fn(), build: vi.fn(async () => {}) }
   const certTx = { setSenderIfNotSet: vi.fn(), build: vi.fn(async () => {}) }
   const flow = {
-    encode: vi.fn(async () => void steps.push('encode')),
+    encode: vi.fn(async () => {
+      steps.push('encode')
+      return { blobId: 'BLOB123' }
+    }),
     register: vi.fn(() => {
       steps.push('register')
       return regTx
@@ -75,6 +78,82 @@ describe('runBlobUpload', () => {
     // structured step progress reached the user for each phase, in journey order, with detail text.
     expect(progress.map((p) => p.step)).toEqual(['encode', 'register', 'upload', 'certify'])
     expect(progress.every((p) => typeof p.detail === 'string' && p.detail.length > 0)).toBe(true)
+  })
+
+  it('aborts before registering when an existing certified copy is found (offers Extend)', async () => {
+    const { mod, flow } = makeModule()
+    const findExistingCopy = vi.fn(async () => ({
+      kind: 'certified' as const,
+      blobId: 'BLOB123',
+      objectId: 'OBJ_EXISTING',
+      endEpoch: 570,
+    }))
+    let thrown: unknown
+    try {
+      await runBlobUpload({
+        ...baseDeps,
+        executor: makeExecutor(),
+        onStatus: () => {},
+        loadWalrusClient: async () => mod,
+        findExistingCopy,
+      })
+    } catch (e) {
+      thrown = e
+    }
+    expect(findExistingCopy).toHaveBeenCalledWith('BLOB123') // checked the encoded blobId
+    const existing = getDuplicateExisting(thrown)
+    expect(existing?.kind).toBe('certified')
+    expect(existing?.objectId).toBe('OBJ_EXISTING')
+    expect(flow.register).not.toHaveBeenCalled() // never paid to register a duplicate
+  })
+
+  it('surfaces a pending existing copy (offers Certify)', async () => {
+    const { mod } = makeModule()
+    const findExistingCopy = vi.fn(async () => ({
+      kind: 'pending' as const,
+      blobId: 'BLOB123',
+      objectId: 'OBJ_PENDING',
+      endEpoch: 560,
+    }))
+    let thrown: unknown
+    try {
+      await runBlobUpload({ ...baseDeps, executor: makeExecutor(), onStatus: () => {}, loadWalrusClient: async () => mod, findExistingCopy })
+    } catch (e) {
+      thrown = e
+    }
+    expect(getDuplicateExisting(thrown)?.kind).toBe('pending')
+  })
+
+  it('force bypasses the existing-copy check and registers a new copy', async () => {
+    const { mod, flow } = makeModule()
+    const findExistingCopy = vi.fn(async () => ({
+      kind: 'certified' as const,
+      blobId: 'BLOB123',
+      objectId: 'OBJ',
+      endEpoch: 570,
+    }))
+    await runBlobUpload({
+      ...baseDeps,
+      executor: makeExecutor(),
+      onStatus: () => {},
+      loadWalrusClient: async () => mod,
+      findExistingCopy,
+      force: true,
+    })
+    expect(findExistingCopy).not.toHaveBeenCalled()
+    expect(flow.register).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes the chosen epochs to register', async () => {
+    const { mod, flow } = makeModule()
+    await runBlobUpload({
+      ...baseDeps,
+      epochs: 20,
+      executor: makeExecutor(),
+      onStatus: () => {},
+      loadWalrusClient: async () => mod,
+    })
+    expect(flow.register).toHaveBeenCalledWith({ owner: '0xabc', epochs: 20, deletable: false })
   })
 
   it('always registers fresh and uploads with the register tx digest (never a reused digest)', async () => {

@@ -11,8 +11,8 @@
 // can't be reused across attempts — reusing a prior/discovered registration (localStorage or on-chain
 // discovery) hands the relay an old tx with a non-matching nonce. Each attempt re-encodes (free) and
 // registers fresh so the tip+nonce the relay verifies is always recent.
-import type { UploadResult, UploadProgress } from '@meddleware/walrus-relay'
-import { attachCertifyRetry } from '@meddleware/walrus-relay'
+import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
+import { attachCertifyRetry, attachDuplicateExisting } from '@meddleware/walrus-relay'
 
 /** Minimal transaction executor — the structural subset App.vue's wallet executor already provides. */
 export interface UploadExecutor {
@@ -35,7 +35,8 @@ interface BuiltTx {
 export interface BlobUploadFlow {
   // Encoding is deterministic from the content and costs no gas; it also mints the per-attempt relay
   // `nonce` committed by the register tip, so it must precede register/upload on this flow instance.
-  encode(): Promise<void>
+  // Returns the content-derived `blobId`, used to check for an existing owned copy before registering.
+  encode(): Promise<{ blobId: string }>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
   // `digest` = the register transaction digest produced by the register tx executed this attempt.
   // Returns the SDK "uploaded" step, including the on-chain `blobObjectId` and the base64
@@ -61,6 +62,17 @@ export interface RunBlobUploadDeps {
   maxTipMist: number
   /** Blob storage reservation length in epochs. */
   epochs: number
+  /**
+   * When true, skip the existing-copy precheck and register a fresh copy unconditionally (the user
+   * chose "Upload a new copy" after being warned).
+   */
+  force?: boolean
+  /**
+   * Precheck for an existing owned copy of this content (by `blobId`, computed from `encode()`).
+   * When it returns a match and `force` is not set, the upload aborts BEFORE registering (no
+   * reservation, no tip) and throws an error carrying the match so the UI can offer Extend/Certify.
+   */
+  findExistingCopy?: (blobId: string) => Promise<ExistingCopy | null>
   executor: UploadExecutor
   /** A Sui client used to `build()` the register/certify transactions. */
   suiClient: unknown
@@ -107,7 +119,19 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   const flow = createBlobUploadFlow(client, deps.bytes)
 
   deps.onStatus({ step: 'encode', detail: 'Encoding…' })
-  await flow.encode()
+  const { blobId } = await flow.encode()
+
+  // Before paying to register, check whether the wallet already owns this exact blob. If so, abort
+  // and surface the match so the UI can offer Extend (certified) / Certify (pending) instead of
+  // creating a wasteful duplicate. `force` (chosen "Upload a new copy") bypasses this.
+  if (!deps.force && deps.findExistingCopy) {
+    const existing = await deps.findExistingCopy(blobId)
+    if (existing) {
+      const err = new Error('Blob already stored on-chain')
+      attachDuplicateExisting(err, existing)
+      throw err
+    }
+  }
 
   deps.onStatus({ step: 'register', detail: 'Registering blob (approve in wallet)…' })
   const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
