@@ -12,6 +12,7 @@
 // discovery) hands the relay an old tx with a non-matching nonce. Each attempt re-encodes (free) and
 // registers fresh so the tip+nonce the relay verifies is always recent.
 import type { UploadResult, UploadProgress } from '@meddleware/walrus-relay'
+import { attachCertifyRetry } from '@meddleware/walrus-relay'
 
 /** Minimal transaction executor — the structural subset App.vue's wallet executor already provides. */
 export interface UploadExecutor {
@@ -104,13 +105,27 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   deps.onStatus({ step: 'upload', detail: 'Uploading to the relay…' })
   await flow.upload({ digest: reg.digest, deletable: false })
 
-  deps.onStatus({ step: 'certify', detail: 'Certifying (approve in wallet)…' })
-  const certTx = flow.certify()
-  certTx.setSenderIfNotSet(deps.address)
-  await certTx.build({ client: deps.suiClient })
-  const cert = await deps.executor.signAndExecute(certTx)
-  await deps.executor.waitForTransaction(cert.digest)
+  // Certify is a plain owner tx built from the storage-node certificate the live `flow` now holds
+  // (no relay, no tip). If it fails (e.g. the user rejects the prompt) the blob is already registered
+  // + stored + paid, so we never want to redo the upload — we expose this closure to retry certify
+  // alone. Re-calling `flow.certify()` just rebuilds the same tx from the in-memory certificate.
+  const runCertify = async (): Promise<UploadResult> => {
+    deps.onStatus({ step: 'certify', detail: 'Certifying (approve in wallet)…' })
+    const certTx = flow.certify()
+    certTx.setSenderIfNotSet(deps.address)
+    await certTx.build({ client: deps.suiClient })
+    const cert = await deps.executor.signAndExecute(certTx)
+    await deps.executor.waitForTransaction(cert.digest)
+    const blob = await flow.getBlob()
+    return { blobId: blob.blobId, url: walrusBlobUrl(deps.network, blob.blobId), digest: cert.digest }
+  }
 
-  const blob = await flow.getBlob()
-  return { blobId: blob.blobId, url: walrusBlobUrl(deps.network, blob.blobId), digest: cert.digest }
+  try {
+    return await runCertify()
+  } catch (e) {
+    // Upload landed but certify did not: attach a retry so the UI can offer a "Certify" button
+    // rather than discarding the paid upload. The closure keeps the live flow (and its certificate).
+    attachCertifyRetry<UploadResult>(e, runCertify)
+    throw e
+  }
 }

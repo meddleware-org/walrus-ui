@@ -2,6 +2,7 @@
 // via loadWalrusClient, so no wasm/network is touched — we assert step order, tx wiring, and result.
 import { describe, it, expect, vi } from 'vitest'
 import { runBlobUpload, type WalrusClientModule } from '../src/upload-flow.js'
+import { getCertifyRetry } from '@meddleware/walrus-relay'
 
 function makeModule() {
   const steps: string[] = []
@@ -89,6 +90,45 @@ describe('runBlobUpload', () => {
     // upload is given the digest produced by the register tx executed this attempt.
     const regDigest = (await executor.signAndExecute.mock.results[0].value).digest
     expect(flow.upload).toHaveBeenCalledWith({ digest: regDigest, deletable: false })
+  })
+
+  it('on a certify failure, throws with a certifyRetry that re-certifies without re-uploading', async () => {
+    const { mod, flow } = makeModule()
+    // Register ok (#1), certify rejected (#2), certify retry ok (#3).
+    let calls = 0
+    const executor = {
+      signAndExecute: vi.fn(async () => {
+        calls += 1
+        if (calls === 2) throw new Error('user rejected certify')
+        return { digest: `dig-${calls}` }
+      }),
+      waitForTransaction: vi.fn(async () => {}),
+    }
+
+    let thrown: unknown
+    try {
+      await runBlobUpload({
+        ...baseDeps,
+        executor,
+        onStatus: () => {},
+        loadWalrusClient: async () => mod,
+      })
+    } catch (e) {
+      thrown = e
+    }
+
+    // The error carries a certify retry; upload was NOT repeated (only one upload call total).
+    const retry = getCertifyRetry<{ blobId: string }>(thrown)
+    expect(retry).toBeTypeOf('function')
+    expect(flow.upload).toHaveBeenCalledTimes(1)
+    expect(flow.register).toHaveBeenCalledTimes(1)
+
+    // Retrying certifies successfully — certify (and getBlob) run again; register/upload do not.
+    const res = await retry!()
+    expect(res.blobId).toBe('BLOB123')
+    expect(flow.certify).toHaveBeenCalledTimes(2) // initial attempt + retry
+    expect(flow.register).toHaveBeenCalledTimes(1) // never re-registered
+    expect(flow.upload).toHaveBeenCalledTimes(1) // never re-uploaded
   })
 
   it('forwards relay host, tip cap, wasm url and auth token into the client factory', async () => {

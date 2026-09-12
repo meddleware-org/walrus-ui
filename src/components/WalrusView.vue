@@ -19,6 +19,7 @@ import { useWallet, getSuiClient } from '../wallet.js'
 import { fetchChallenge, buildAccessProof } from '@meddleware/nft-gate-client'
 import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist, walruscanBlobUrl } from '../config.js'
 import { runBlobUpload } from '../upload-flow.js'
+import { getCertifyRetry } from '@meddleware/walrus-relay'
 import {
   consumeStorageKey,
   isRedeemedConflict,
@@ -101,22 +102,29 @@ async function performUpload(
         })
 
   const runOnce = async (authToken: string | undefined): Promise<UploadResult> => {
-    const r = await runBlobUpload({
-      bytes,
-      network: NETWORK,
-      relayHost: opts.relayHost,
-      address,
-      wasmUrl: walrusWasmUrl,
-      maxTipMist: uploadRelayMaxTipMist(),
-      epochs: MAX_SINGLE_RESERVATION_EPOCHS,
-      executor,
-      suiClient: getSuiClient(),
-      authToken,
-      onStatus: opts.onStatus,
-    })
-    // Success → clear the consume layer (the use is now genuinely spent for an upload).
-    if (consumeKey) storage.removeItem(consumeKey)
-    return r
+    try {
+      const r = await runBlobUpload({
+        bytes,
+        network: NETWORK,
+        relayHost: opts.relayHost,
+        address,
+        wasmUrl: walrusWasmUrl,
+        maxTipMist: uploadRelayMaxTipMist(),
+        epochs: MAX_SINGLE_RESERVATION_EPOCHS,
+        executor,
+        suiClient: getSuiClient(),
+        authToken,
+        onStatus: opts.onStatus,
+      })
+      // Success → clear the consume layer (the use is now genuinely spent for an upload).
+      if (consumeKey) storage.removeItem(consumeKey)
+      return r
+    } catch (e) {
+      // A certify-only failure means the upload already landed (relay access was used), so clear the
+      // consume too — the certify retry is a plain Sui tx and must not trigger a fresh NFT consume.
+      if (getCertifyRetry(e) && consumeKey) storage.removeItem(consumeKey)
+      throw e
+    }
   }
 
   try {
