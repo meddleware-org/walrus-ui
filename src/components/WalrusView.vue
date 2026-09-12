@@ -23,11 +23,6 @@ import {
   consumeStorageKey,
   isRedeemedConflict,
   resolveGatedAuthToken,
-  registerStorageKey,
-  contentKey,
-  loadRegisterResume,
-  saveRegisterResume,
-  clearRegisterResume,
 } from '../access-resume.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
@@ -61,33 +56,15 @@ async function onPurchase(): Promise<void> {
   }
 }
 
-// On-chain resume discovery: given the encoded blobId, find an already-registered, uncertified blob
-// owned by `owner` and return its register digest, so an interrupted upload can resume WITHOUT a
-// local pointer (robust to cache-clear / new device / incognito). Best-effort: any failure falls
-// through to a fresh register. The walrus client is loaded lazily to keep it out of the eager graph.
-async function discoverRegistration(owner: string, blobId: string): Promise<string | undefined> {
-  try {
-    const { createWalrusClient, findUncertifiedRegisteredBlob } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
-    const found = await findUncertifiedRegisteredBlob(getSuiClient(), walrusClient, owner, blobId)
-    return found?.registerDigest
-  } catch {
-    return undefined
-  }
-}
-
 // Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
 // register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure gathers
-// the wallet-bound inputs and manages two resume layers so an interrupted upload wastes nothing —
-// both persisted in localStorage (fast path) and rediscoverable on-chain (fallback), so they
-// survive a page reload — and even a cache-clear — once the same file is re-selected:
-//   1. Single-use consume: the relay treats the permanent on-chain `consumeDigest` as the one-time
-//      redemption token, so a use is only spent when an upload succeeds. The digest is persisted and
-//      reused across retries/reload (re-signing a fresh challenge is free); cleared on success.
-//   2. Walrus register: a registered-but-not-uploaded blob is resumed by its persisted register
-//      digest (matched to the re-selected file by content hash), skipping the register transaction
-//      (no new WAL/gas). Cleared on success, or when a resumed attempt itself fails (fall back to a
-//      fresh register).
+// the wallet-bound inputs and manages the single-use consume resume layer:
+//   Single-use consume: the relay treats the permanent on-chain `consumeDigest` as the one-time
+//   redemption token, so a use is only spent when an upload succeeds. The digest is persisted and
+//   reused across retries/reload (re-signing a fresh challenge is free); cleared on success.
+// The Walrus registration is NOT resumed — with an upload relay the tip + nonce live in the register
+// transaction and the relay requires it to be recent, so every attempt registers fresh (see
+// upload-flow.ts). Reusing a prior registration is what produced "the received transaction is too old".
 async function performUpload(
   bytes: Uint8Array,
   opts: { relayHost: string; onStatus: (s: string) => void },
@@ -95,12 +72,10 @@ async function performUpload(
   if (!account.value) throw new Error('Connect your wallet first.')
   const executor = await buildExecutor()
   const address = account.value.address
-  const key = contentKey(bytes)
   const storage = window.localStorage
 
   const gated = !!(gate && gateState.hasAccess.value === true && gateState.nftId.value)
   const consumeKey = gate ? consumeStorageKey(NETWORK, gate.gateId, address) : null
-  const regKey = registerStorageKey(NETWORK, address)
 
   // Resolve this attempt's relay token (gated only); reuses a stored consume, fresh challenge each time.
   const token = (forceFresh: boolean): Promise<string | undefined> =>
@@ -122,38 +97,22 @@ async function performUpload(
         })
 
   const runOnce = async (authToken: string | undefined): Promise<UploadResult> => {
-    // Resume the register step iff a digest was saved for THIS exact file (survives reload).
-    const resumeRegisterDigest = loadRegisterResume(storage, regKey, key) ?? undefined
-    try {
-      const r = await runBlobUpload({
-        bytes,
-        network: NETWORK,
-        relayHost: opts.relayHost,
-        address,
-        wasmUrl: walrusWasmUrl,
-        maxTipMist: uploadRelayMaxTipMist(),
-        epochs: MAX_SINGLE_RESERVATION_EPOCHS,
-        executor,
-        suiClient: getSuiClient(),
-        authToken,
-        onStatus: opts.onStatus,
-        resumeRegisterDigest,
-        // On-chain fallback when the local pointer is missing (cache-clear / new device): find an
-        // already-registered, uncertified blob for this content and resume from it — gas-free.
-        discoverRegisterDigest: (blobId) => discoverRegistration(address, blobId),
-        onRegistered: (digest) => saveRegisterResume(storage, regKey, key, digest),
-      })
-      // Success → clear both resume layers (the use is now genuinely spent for an upload).
-      clearRegisterResume(storage, regKey)
-      if (consumeKey) storage.removeItem(consumeKey)
-      return r
-    } catch (e) {
-      // A resumed attempt that fails drops the saved register digest so the next try does a full
-      // fresh register (never worse than today). A non-resumed failure keeps the digest that
-      // onRegistered saved, so the next try (or a reload + re-select) resumes without re-registering.
-      if (resumeRegisterDigest !== undefined) clearRegisterResume(storage, regKey)
-      throw e
-    }
+    const r = await runBlobUpload({
+      bytes,
+      network: NETWORK,
+      relayHost: opts.relayHost,
+      address,
+      wasmUrl: walrusWasmUrl,
+      maxTipMist: uploadRelayMaxTipMist(),
+      epochs: MAX_SINGLE_RESERVATION_EPOCHS,
+      executor,
+      suiClient: getSuiClient(),
+      authToken,
+      onStatus: opts.onStatus,
+    })
+    // Success → clear the consume layer (the use is now genuinely spent for an upload).
+    if (consumeKey) storage.removeItem(consumeKey)
+    return r
   }
 
   try {
@@ -161,11 +120,11 @@ async function performUpload(
   } catch (e) {
     if (gated && isRedeemedConflict(e)) {
       // Stored consume already redeemed (a prior upload actually landed): clear it, spend a fresh
-      // use, and retry — resuming the registered blob if one is still saved for this file.
+      // use, and retry.
       storage.removeItem(consumeKey as string)
       return await runOnce(await token(true))
     }
-    throw e // keep the saved register digest so a manual retry / reload resumes
+    throw e
   }
 }
 

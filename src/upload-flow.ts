@@ -4,6 +4,13 @@
 // The `@mysten/walrus` wasm client must NOT be pulled into the eager module graph (see CLAUDE.md),
 // so this module never imports @meddleware/walrus-client at top level — it loads it lazily through
 // the injectable `loadWalrusClient` (default: a dynamic import). Tests inject a fake loader.
+//
+// Register is ALWAYS performed, never resumed/skipped. With an upload relay (required for browser
+// uploads) the SDK embeds the relay tip + a per-encode `nonce` INSIDE the register transaction, and
+// the relay rejects a stale `tx_id` as "the received transaction is too old". A register tx therefore
+// can't be reused across attempts — reusing a prior/discovered registration (localStorage or on-chain
+// discovery) hands the relay an old tx with a non-matching nonce. Each attempt re-encodes (free) and
+// registers fresh so the tip+nonce the relay verifies is always recent.
 import type { UploadResult } from '@meddleware/walrus-relay'
 
 /** Minimal transaction executor — the structural subset App.vue's wallet executor already provides. */
@@ -25,13 +32,11 @@ interface BuiltTx {
 }
 
 export interface BlobUploadFlow {
-  // The SDK `encode()` returns a `WriteBlobStepEncoded`; we use its deterministic `blobId` to look
-  // up an existing on-chain registration for the same content (resume discovery).
-  encode(): Promise<{ blobId: string }>
+  // Encoding is deterministic from the content and costs no gas; it also mints the per-attempt relay
+  // `nonce` committed by the register tip, so it must precede register/upload on this flow instance.
+  encode(): Promise<void>
   register(opts: { owner: string; epochs: number; deletable: boolean }): BuiltTx
-  // `digest` = the register transaction digest. When resuming without a prior `register()` call on
-  // this flow instance, the SDK accepts the digest + `deletable` to upload against the already
-  // registered blob (see `@mysten/walrus` WriteBlobFlowUploadOptions).
+  // `digest` = the register transaction digest produced by the register tx executed this attempt.
   upload(opts: { digest: string; deletable?: boolean }): Promise<void>
   certify(): BuiltTx
   getBlob(): Promise<{ blobId: string }>
@@ -53,40 +58,20 @@ export interface RunBlobUploadDeps {
   /** A Sui client used to `build()` the register/certify transactions. */
   suiClient: unknown
   /**
-   * Bearer proof token for an NFT-gated relay. May be a provider resolved per request so a resumed
+   * Bearer proof token for an NFT-gated relay. May be a provider resolved per request so a retried
    * upload presents a fresh challenge signature (see `@meddleware/walrus-client`).
    */
   authToken?: string | (() => string | undefined)
   onStatus: (s: string) => void
   /** Lazy loader for the Walrus client module (keeps wasm out of the eager bundle). */
   loadWalrusClient?: () => Promise<WalrusClientModule>
-  /**
-   * Resume from a blob registered in a PRIOR attempt (this session or a previous page load) by
-   * passing its register transaction digest. The file is re-encoded (client-side, no gas) but the
-   * on-chain `register` transaction is skipped — so an interrupted upload never re-registers (no new
-   * WAL/gas), even across a reload once the same file is re-selected. Omit for a fresh upload.
-   */
-  resumeRegisterDigest?: string
-  /**
-   * On-chain resume fallback: called with the encoded `blobId` when no `resumeRegisterDigest` was
-   * supplied. Returns the register digest of an already-registered, uncertified on-chain blob for
-   * this content (or `undefined`). This makes resume robust to a lost local pointer (cache-clear /
-   * new device) — the registration is discovered on-chain rather than remembered client-side.
-   */
-  discoverRegisterDigest?: (blobId: string) => Promise<string | undefined>
-  /**
-   * Called with the register transaction digest immediately after a fresh register succeeds, so the
-   * caller can PERSIST it (e.g. to localStorage) and resume the upload after a failure/reload
-   * without re-registering.
-   */
-  onRegistered?: (registerDigest: string) => void
 }
 
 /**
- * Register → upload → certify a blob and resolve its id + public URL. Encoding is always performed
- * (client-side, no gas); when `resumeRegisterDigest` is supplied the on-chain register transaction
- * is skipped and the upload proceeds against the already-registered blob. Up to two wallet approvals
- * (register — skipped on resume — and certify) are requested via `executor`; `onStatus` narrates.
+ * Register → upload → certify a blob and resolve its id + public URL. Every attempt encodes
+ * (client-side, no gas) and registers fresh: the relay tip + nonce the relay verifies live in the
+ * register transaction and must be recent, so a registration is never reused across attempts. Two
+ * wallet approvals (register and certify) are requested via `executor`; `onStatus` narrates.
  */
 export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResult> {
   // The real module's flow types are richer than the narrow structural subset we use here, so the
@@ -105,33 +90,18 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   })
   const flow = createBlobUploadFlow(client, deps.bytes)
 
-  // Encoding is deterministic from the content and costs no gas, so it always runs — including on a
-  // resume, where it re-derives the slivers for the re-selected file (and yields the blobId used
-  // for on-chain resume discovery).
   deps.onStatus('Encoding…')
-  const { blobId } = await flow.encode()
+  await flow.encode()
 
-  // Resolve a resume point: a caller-provided digest (localStorage fast path) or, failing that, an
-  // on-chain lookup by blobId (robust to a lost local pointer). Either skips the register tx.
-  let registerDigest = deps.resumeRegisterDigest
-  if (registerDigest === undefined && deps.discoverRegisterDigest) {
-    registerDigest = (await deps.discoverRegisterDigest(blobId)) ?? undefined
-  }
-
-  if (registerDigest === undefined) {
-    deps.onStatus('Registering blob (approve in wallet)…')
-    const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
-    regTx.setSenderIfNotSet(deps.address)
-    await regTx.build({ client: deps.suiClient })
-    const reg = await deps.executor.signAndExecute(regTx)
-    await deps.executor.waitForTransaction(reg.digest)
-    registerDigest = reg.digest
-    // Persist point: hand back the digest so the upload can be resumed after a failure/reload.
-    deps.onRegistered?.(registerDigest)
-  }
+  deps.onStatus('Registering blob (approve in wallet)…')
+  const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
+  regTx.setSenderIfNotSet(deps.address)
+  await regTx.build({ client: deps.suiClient })
+  const reg = await deps.executor.signAndExecute(regTx)
+  await deps.executor.waitForTransaction(reg.digest)
 
   deps.onStatus('Uploading to the relay…')
-  await flow.upload({ digest: registerDigest, deletable: false })
+  await flow.upload({ digest: reg.digest, deletable: false })
 
   deps.onStatus('Certifying (approve in wallet)…')
   const certTx = flow.certify()

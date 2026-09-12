@@ -5,11 +5,6 @@ import {
   consumeStorageKey,
   isRedeemedConflict,
   resolveGatedAuthToken,
-  registerStorageKey,
-  contentKey,
-  loadRegisterResume,
-  saveRegisterResume,
-  clearRegisterResume,
   type StorageLike,
 } from '../src/access-resume.js'
 
@@ -56,33 +51,6 @@ describe('consumeStorageKey', () => {
     expect(consumeStorageKey('testnet', '0xgate', '0xaddr')).toBe(
       'mw:walrus:consume:testnet:0xgate:0xaddr',
     )
-  })
-})
-
-describe('register-resume persistence', () => {
-  it('registerStorageKey is namespaced by network + address', () => {
-    expect(registerStorageKey('testnet', '0xaddr')).toBe('mw:walrus:register:testnet:0xaddr')
-  })
-
-  it('contentKey differs for different content and matches identical content', () => {
-    const a = contentKey(new Uint8Array([1, 2, 3, 4]))
-    const b = contentKey(new Uint8Array([1, 2, 3, 4]))
-    const c = contentKey(new Uint8Array([9, 9, 9, 9]))
-    expect(a).toBe(b)
-    expect(a).not.toBe(c)
-  })
-
-  it('load returns the digest only for the same content, and clear removes it', () => {
-    const storage = fakeStorage()
-    const key = registerStorageKey('testnet', '0xaddr')
-    const ck = contentKey(new Uint8Array([1, 2, 3]))
-    saveRegisterResume(storage, key, ck, 'reg-digest')
-    // Same content ⇒ resumes.
-    expect(loadRegisterResume(storage, key, ck)).toBe('reg-digest')
-    // Different content ⇒ no resume (a different file must not reuse another's registration).
-    expect(loadRegisterResume(storage, key, contentKey(new Uint8Array([4, 5, 6])))).toBeNull()
-    clearRegisterResume(storage, key)
-    expect(loadRegisterResume(storage, key, ck)).toBeNull()
   })
 })
 

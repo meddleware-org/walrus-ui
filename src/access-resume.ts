@@ -21,54 +21,11 @@ export function consumeStorageKey(network: string, gateId: string, address: stri
   return `mw:walrus:consume:${network}:${gateId}:${address}`
 }
 
-// ── Register-resume (Walrus flow) ───────────────────────────────────────────────────────────
-// A blob registered on-chain but not yet uploaded/certified can be resumed WITHOUT re-registering
-// (no new WAL/gas): persist its register transaction digest, keyed by a hash of the file content,
-// and reuse it when the same file is uploaded again — even after a page reload, since the user
-// re-selects the file (only the tiny digest is persisted, never the bytes).
-
-/** Stable per-(network, address) key under which a pending register digest + content hash is stored. */
-export function registerStorageKey(network: string, address: string): string {
-  return `mw:walrus:register:${network}:${address}`
-}
-
-/** Cheap content fingerprint (length + head/tail bytes) to match a retry to the same file. */
-export function contentKey(bytes: Uint8Array): string {
-  const head = Array.from(bytes.slice(0, 16)).join(',')
-  const tail = Array.from(bytes.slice(-16)).join(',')
-  return `${bytes.length}:${head}:${tail}`
-}
-
-/** Return the stored register digest iff it was saved for this exact file content. */
-export function loadRegisterResume(
-  storage: StorageLike,
-  key: string,
-  content: string,
-): string | null {
-  const raw = storage.getItem(key)
-  if (!raw) return null
-  try {
-    const v = JSON.parse(raw) as { contentKey?: string; registerDigest?: string }
-    return v.contentKey === content && v.registerDigest ? v.registerDigest : null
-  } catch {
-    return null
-  }
-}
-
-/** Persist a register digest against a file content key so the upload can resume later. */
-export function saveRegisterResume(
-  storage: StorageLike,
-  key: string,
-  content: string,
-  registerDigest: string,
-): void {
-  storage.setItem(key, JSON.stringify({ contentKey: content, registerDigest }))
-}
-
-/** Clear any stored register-resume entry (on success, or to fall back to a fresh register). */
-export function clearRegisterResume(storage: StorageLike, key: string): void {
-  storage.removeItem(key)
-}
+// NOTE: there is deliberately no register-resume layer. With an upload relay (required for browser
+// uploads) the SDK embeds the relay tip + a per-encode nonce INSIDE the register transaction, and
+// the relay rejects a stale `tx_id` as "the received transaction is too old". A registration thus
+// can't be reused across attempts, so every upload registers fresh (see upload-flow.ts). Only the
+// single-use consume digest below is resumable — it's a permanent on-chain token, not a tx that ages.
 
 /**
  * True if `err` is the gateway's "this consume was already redeemed" rejection (HTTP 409 with

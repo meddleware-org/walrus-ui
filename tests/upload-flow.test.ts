@@ -8,10 +8,7 @@ function makeModule() {
   const regTx = { setSenderIfNotSet: vi.fn(), build: vi.fn(async () => {}) }
   const certTx = { setSenderIfNotSet: vi.fn(), build: vi.fn(async () => {}) }
   const flow = {
-    encode: vi.fn(async () => {
-      steps.push('encode')
-      return { blobId: 'BLOB123' }
-    }),
+    encode: vi.fn(async () => void steps.push('encode')),
     register: vi.fn(() => {
       steps.push('register')
       return regTx
@@ -75,6 +72,24 @@ describe('runBlobUpload', () => {
     expect(status.length).toBeGreaterThanOrEqual(4)
   })
 
+  it('always registers fresh and uploads with the register tx digest (never a reused digest)', async () => {
+    // The upload relay embeds its tip + nonce in the register tx and rejects a stale tx_id as "too
+    // old", so every attempt MUST register fresh — no resume/discovery shortcut skips register.
+    const { mod, flow, steps } = makeModule()
+    const executor = makeExecutor()
+    await runBlobUpload({
+      ...baseDeps,
+      executor,
+      onStatus: () => {},
+      loadWalrusClient: async () => mod,
+    })
+    expect(flow.register).toHaveBeenCalledTimes(1)
+    expect(steps).toEqual(['encode', 'register', 'upload', 'certify'])
+    // upload is given the digest produced by the register tx executed this attempt.
+    const regDigest = (await executor.signAndExecute.mock.results[0].value).digest
+    expect(flow.upload).toHaveBeenCalledWith({ digest: regDigest, deletable: false })
+  })
+
   it('forwards relay host, tip cap, wasm url and auth token into the client factory', async () => {
     const { mod } = makeModule()
     await runBlobUpload({
@@ -105,87 +120,6 @@ describe('runBlobUpload', () => {
     })
     expect(regTx.setSenderIfNotSet).toHaveBeenCalledWith('0xabc')
     expect(certTx.setSenderIfNotSet).toHaveBeenCalledWith('0xabc')
-  })
-
-  it('onRegistered hands back the register digest on a fresh run (persist point for resume)', async () => {
-    const { mod } = makeModule()
-    let captured: string | undefined
-    await runBlobUpload({
-      ...baseDeps,
-      executor: makeExecutor(),
-      onStatus: () => {},
-      loadWalrusClient: async () => mod,
-      onRegistered: (digest) => {
-        captured = digest
-      },
-    })
-    expect(captured).toMatch(/^dig-/)
-  })
-
-  it('resumeRegisterDigest skips the register tx but still encodes + uploads with the digest', async () => {
-    const { mod, flow, steps } = makeModule()
-    const executor = makeExecutor()
-    const res = await runBlobUpload({
-      ...baseDeps,
-      executor,
-      onStatus: () => {},
-      loadWalrusClient: async () => mod,
-      resumeRegisterDigest: 'reg-dig',
-    })
-    // Encoding still runs (re-derives slivers for the re-selected file); the register tx is skipped.
-    expect(steps).toEqual(['encode', 'upload', 'certify'])
-    expect(flow.register).not.toHaveBeenCalled()
-    expect(flow.upload).toHaveBeenCalledWith({ digest: 'reg-dig', deletable: false })
-    expect(executor.signAndExecute).toHaveBeenCalledTimes(1) // only certify (no register)
-    expect(res.blobId).toBe('BLOB123')
-  })
-
-  it('discoverRegisterDigest (on-chain fallback) skips the register tx when it finds a registration', async () => {
-    const { mod, flow, steps } = makeModule()
-    const executor = makeExecutor()
-    const discoverRegisterDigest = vi.fn(async (blobId: string) => `disc-${blobId}`)
-    const res = await runBlobUpload({
-      ...baseDeps,
-      executor,
-      onStatus: () => {},
-      loadWalrusClient: async () => mod,
-      discoverRegisterDigest, // no resumeRegisterDigest → falls back to discovery
-    })
-    expect(discoverRegisterDigest).toHaveBeenCalledWith('BLOB123') // encoded blobId
-    expect(steps).toEqual(['encode', 'upload', 'certify']) // register skipped
-    expect(flow.register).not.toHaveBeenCalled()
-    expect(flow.upload).toHaveBeenCalledWith({ digest: 'disc-BLOB123', deletable: false })
-    expect(executor.signAndExecute).toHaveBeenCalledTimes(1) // certify only
-    expect(res.blobId).toBe('BLOB123')
-  })
-
-  it('registers normally when discovery finds nothing', async () => {
-    const { mod, flow, steps } = makeModule()
-    const discoverRegisterDigest = vi.fn(async () => undefined)
-    await runBlobUpload({
-      ...baseDeps,
-      executor: makeExecutor(),
-      onStatus: () => {},
-      loadWalrusClient: async () => mod,
-      discoverRegisterDigest,
-    })
-    expect(discoverRegisterDigest).toHaveBeenCalledWith('BLOB123')
-    expect(flow.register).toHaveBeenCalledTimes(1) // no registration found → fresh register
-    expect(steps).toEqual(['encode', 'register', 'upload', 'certify'])
-  })
-
-  it('prefers a caller-supplied resumeRegisterDigest over discovery', async () => {
-    const { mod } = makeModule()
-    const discoverRegisterDigest = vi.fn(async () => 'should-not-be-used')
-    await runBlobUpload({
-      ...baseDeps,
-      executor: makeExecutor(),
-      onStatus: () => {},
-      loadWalrusClient: async () => mod,
-      resumeRegisterDigest: 'local-digest',
-      discoverRegisterDigest,
-    })
-    expect(discoverRegisterDigest).not.toHaveBeenCalled() // localStorage fast path wins
   })
 
   it('forwards a provider-function auth token to the client factory', async () => {
