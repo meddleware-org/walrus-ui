@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { CopyableAddress, ExplorerLink } from '@meddleware/ui'
 import type { OwnedBlob } from '@meddleware/walrus-client'
-import { MAX_SINGLE_RESERVATION_EPOCHS } from '@meddleware/walrus-relay'
+import { MAX_SINGLE_RESERVATION_EPOCHS, formatCoinAmount } from '@meddleware/walrus-relay'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import type { Executor } from '../wallet.js'
 import { NETWORK, walruscanBlobUrl } from '../config.js'
@@ -44,10 +44,6 @@ const MAX = MAX_SINGLE_RESERVATION_EPOCHS
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
-}
-/** FROST (1e-9 WAL) → short WAL string. */
-function toWal(frost: bigint): string {
-  return (Number(frost) / 1e9).toFixed(4)
 }
 
 function maxAddable(endEpoch: number): number {
@@ -293,7 +289,7 @@ watch(
                   </button>
                   <button type="button" :disabled="!!busy" @click="extendBlob(g.representative)">Extend</button>
                   <span v-if="extendCostFrost[g.representative.objectId] != null" class="est">
-                    ≈{{ toWal(extendCostFrost[g.representative.objectId]!) }} WAL
+                    ≈{{ formatCoinAmount(extendCostFrost[g.representative.objectId]!, 'WAL') }}
                   </span>
                 </span>
               </template>
