@@ -10,7 +10,7 @@ import {
   useAccessGate,
 } from '@meddleware/walrus-relay'
 import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
-import { CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl } from '@meddleware/ui'
+import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl, type AppTab } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
@@ -33,8 +33,11 @@ import {
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
-type Tab = 'upload' | 'blobs'
-const activeTab = ref<Tab>('upload')
+const TABS: AppTab[] = [
+  { id: 'upload', label: 'Upload' },
+  { id: 'blobs', label: 'My Blobs' },
+]
+const activeTab = ref<string>('upload')
 
 const { account, signPersonalMessage, buildExecutor } = useWallet()
 
@@ -230,24 +233,7 @@ function onSettled(): void {
   <div class="page">
     <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
 
-    <nav class="tabs" aria-label="Feature tabs">
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'upload' }"
-        @click="activeTab = 'upload'"
-      >
-        Upload
-      </button>
-      <button
-        type="button"
-        class="tab"
-        :class="{ active: activeTab === 'blobs' }"
-        @click="activeTab = 'blobs'"
-      >
-        My Blobs
-      </button>
-    </nav>
+    <AppTabNav :tabs="TABS" v-model="activeTab" aria-label="Feature tabs" style="margin: 1rem 0 0.5rem" />
 
     <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
       <template v-if="activeTab === 'upload'">
@@ -381,27 +367,4 @@ function onSettled(): void {
   line-height: 1.5;
 }
 
-.tabs {
-  display: flex;
-  gap: 0.25rem;
-  margin: 1rem 0 0.5rem;
-  border-bottom: 2px solid var(--border);
-}
-
-.tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 0.5rem 1rem;
-  margin-bottom: -2px;
-  cursor: pointer;
-  font-size: 0.95rem;
-  color: var(--muted);
-}
-
-.tab.active {
-  border-bottom-color: var(--accent);
-  color: var(--text);
-  font-weight: 600;
-}
 </style>
