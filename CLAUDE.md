@@ -69,3 +69,24 @@ Keep each feature as a tab or route so the shell remains composable.
 - Do not derive exchange rates, fees, or NAV in this app.
 - Do not add wallet-library-specific code outside `src/wallet.ts`.
 - Do not hardcode `VITE_UPLOAD_RELAY_MAX_TIP_MIST` — read it from `import.meta.env`.
+
+---
+
+## Deferred documentation — NOT for the `docs.` website (planned here per Part 0.4)
+
+> Captured for the future **`dev.meddleware.co.uk`** subdomain and white-label offering; excluded
+> from the user-facing `docs.` site (which covers *what/how/when* for end users only).
+
+### `dev.` — developer integration (to write later)
+
+- **Embed `WalrusView`** in a host app (`import { WalrusView } from '@meddleware/walrus-ui'`) with the
+  shared `@meddleware/wallet-adapter` context; the dual app+library contract and why the core UI stays
+  shell-free. The SDK-level integration story lives in `@meddleware/walrus-client`.
+
+### White-label operator path (to write later)
+
+- Deploying walrus-ui against an operator's **own relay + tip ceiling**: the `VITE_*` build args
+  (`VITE_UPLOAD_RELAY_MAX_TIP_MIST`, relay hosts, network) and the Docker `--build-arg` seams;
+  branding via `@meddleware/design-tokens` + the `AppHeader` slot. Note that commission routing is
+  fixed by `@meddleware/walrus-relay/constants` (access-gate `PlatformConfig`) and is not an operator
+  knob here.

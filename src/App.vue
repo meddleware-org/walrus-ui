@@ -7,6 +7,7 @@ import { NETWORK, OPERATOR_RELAY_HOSTS } from './config.js'
 import WalrusView from './components/WalrusView.vue'
 
 const { mode, set } = useColorMode('dark')
+const DOCS_URL = import.meta.env.VITE_DOCS_URL || 'https://docs.meddleware.co.uk/blockchain/sui/walrus-storage/'
 </script>
 
 <template>
@@ -23,7 +24,7 @@ const { mode, set } = useColorMode('dark')
 
     <WalrusView />
 
-    <AppFooter />
+    <AppFooter :docs-url="DOCS_URL" />
   </div>
 </template>
 
