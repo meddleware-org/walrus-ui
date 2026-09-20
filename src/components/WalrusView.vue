@@ -10,7 +10,7 @@ import {
   useAccessGate,
 } from '@meddleware/walrus-relay'
 import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
-import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl, type AppTab } from '@meddleware/ui'
+import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
@@ -295,7 +295,7 @@ function onSettled(): void {
             </p>
             <p>
               <strong>URL:</strong>
-              <a :href="result.url" target="_blank" rel="noopener">{{ result.url }}</a>
+              <a :href="safeHref(result.url)" target="_blank" rel="noopener noreferrer">{{ result.url }}</a>
             </p>
             <p v-if="result.digest">
               <strong>Certify tx:</strong>

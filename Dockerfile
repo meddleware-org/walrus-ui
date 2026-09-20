@@ -20,7 +20,7 @@
 #   VITE_ACCESS_GATE_PRICE_MIST_{NET}  — purchase price in MIST (optional, default 0)
 #   VITE_UPLOAD_RELAY_MAX_TIP_MIST     — max relay tip cap in MIST (optional, default 50000000)
 # packageId and platformConfigId are hardcoded in @meddleware/walrus-relay constants.
-FROM node:22-slim AS build
+FROM node:24-slim AS build
 
 WORKDIR /app
 
