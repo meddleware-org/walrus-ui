@@ -233,9 +233,9 @@ function onSettled(): void {
   <div class="page">
     <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
 
-    <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
-      <AppTabNav :tabs="TABS" v-model="activeTab" aria-label="Feature tabs" style="margin: 1rem 0 0.5rem" />
+    <AppTabNav :tabs="TABS" v-model="activeTab" aria-label="Feature tabs" style="margin: 1rem 0 0.5rem" />
 
+    <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
       <template v-if="activeTab === 'upload'">
         <!-- Gated + no access: replace the form with the purchase CTA so the user is guided to buy
              first, rather than facing a disabled form. -->
