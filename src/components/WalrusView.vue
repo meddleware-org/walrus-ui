@@ -10,7 +10,7 @@ import {
   useAccessGate,
 } from '@meddleware/walrus-relay'
 import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
-import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
+import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, UiToolIntro, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
@@ -230,8 +230,7 @@ function onSettled(): void {
 </script>
 
 <template>
-  <div class="page">
-    <p class="sub">Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</p>
+    <UiToolIntro>Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</UiToolIntro>
 
     <AppTabNav :tabs="TABS" v-model="activeTab" aria-label="Feature tabs" style="margin: 1rem 0 0.5rem" />
 
@@ -318,22 +317,9 @@ function onSettled(): void {
         :highlight-blob-id="highlightBlobId"
       />
     </WalletGuard>
-  </div>
 </template>
 
 <style scoped>
-.page {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
-  flex: 1;
-}
-
-.sub {
-  color: var(--muted);
-  margin: 0.25rem 0 0;
-}
-
 .result {
   margin-top: 1.5rem;
   padding: 1rem;
