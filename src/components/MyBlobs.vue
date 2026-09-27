@@ -93,7 +93,7 @@ function refreshPending(): void {
 }
 
 // ── Extend ──────────────────────────────────────────────────────────────────
-let extendReq: Record<string, number> = {}
+const extendReq: Record<string, number> = {}
 
 // User picked an amount → clamp and (re)price it. We estimate only on interaction, not for every row
 // on load, to avoid spinning up a Walrus client per blob.
