@@ -10,7 +10,7 @@ import {
   useAccessGate,
 } from '@meddleware/walrus-relay'
 import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
-import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, UiToolIntro, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
+import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, UiTabPanel, UiToolIntro, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
@@ -232,94 +232,99 @@ function onSettled(): void {
 <template>
     <UiToolIntro>Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</UiToolIntro>
 
-    <AppTabNav :tabs="TABS" v-model="activeTab" aria-label="Feature tabs" style="margin: 1rem 0 0.5rem" />
+    <AppTabNav v-model="activeTab" :tabs="TABS" id-prefix="walrus" aria-label="Feature tabs" class="walrus-tabs" />
 
     <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
-      <template v-if="activeTab === 'upload'">
-        <!-- Gated + no access: replace the form with the purchase CTA so the user is guided to buy
-             first, rather than facing a disabled form. -->
-        <div v-if="gateState.gateConfigured && gateState.hasAccess.value === false" class="gate-card">
-          <AccessGateCta
-            :gate-configured="gateState.gateConfigured"
-            :has-access="gateState.hasAccess.value"
-            :busy="purchasing"
-            :price-mist="gate?.priceMist ?? null"
-            @purchase="onPurchase"
-          />
-        </div>
+      <UiTabPanel id-prefix="walrus" :tab="activeTab">
+        <template v-if="activeTab === 'upload'">
+          <!-- Gated + no access: replace the form with the purchase CTA so the user is guided to buy
+               first, rather than facing a disabled form. -->
+          <div v-if="gateState.gateConfigured && gateState.hasAccess.value === false" class="gate-card">
+            <AccessGateCta
+              :gate-configured="gateState.gateConfigured"
+              :has-access="gateState.hasAccess.value"
+              :busy="purchasing"
+              :price-mist="gate?.priceMist ?? null"
+              @purchase="onPurchase"
+            />
+          </div>
 
-        <!-- Ownership check still in flight. -->
-        <p
-          v-else-if="gateState.gateConfigured && gateState.hasAccess.value === null"
-          class="checking"
-        >
-          Checking access…
-        </p>
+          <!-- Ownership check still in flight. -->
+          <p
+            v-else-if="gateState.gateConfigured && gateState.hasAccess.value === null"
+            class="checking"
+          >
+            Checking access…
+          </p>
 
-        <!-- Access held (or ungated relay): show the upload form. -->
-        <template v-else>
-          <!-- Gated relays spend a credit before the file is stored — make the "attempt, not a
-               guarantee" nature explicit, while reassuring that attempts resume. -->
-          <UiNotice v-if="gateState.gateConfigured" type="info" class="credit-notice">
-            Uploading spends <strong>one credit</strong> from your access NFT (an on-chain step)
-            before the file is stored — it pays for an upload <em>attempt</em>, not a guaranteed
-            upload. Your attempt resumes automatically, even after a page reload if you re-select
-            the same file, so a credit is normally not lost. A credit is spent without a completed
-            upload only if you abandon the upload entirely, cancel a required wallet approval, or
-            wait long enough that the reserved storage lapses.
-          </UiNotice>
+          <!-- Access held (or ungated relay): show the upload form. -->
+          <template v-else>
+            <!-- Gated relays spend a credit before the file is stored — make the "attempt, not a
+                 guarantee" nature explicit, while reassuring that attempts resume. -->
+            <UiNotice v-if="gateState.gateConfigured" type="info" class="credit-notice">
+              Uploading spends <strong>one credit</strong> from your access NFT (an on-chain step)
+              before the file is stored — it pays for an upload <em>attempt</em>, not a guaranteed
+              upload. Your attempt resumes automatically, even after a page reload if you re-select
+              the same file, so a credit is normally not lost. A credit is spent without a completed
+              upload only if you abandon the upload entirely, cancel a required wallet approval, or
+              wait long enough that the reserved storage lapses.
+            </UiNotice>
 
-          <WalrusUpload
-            :hosts="relayHosts(NETWORK)"
-            :connected="!!account"
-            :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
-            :perform-upload="performUpload"
-            :estimate-storage-cost="estimateUploadStorageCost"
-            @uploaded="onUploaded"
-            @settled="onSettled"
-            @manage-existing="onManageExisting"
-          />
+            <WalrusUpload
+              :hosts="relayHosts(NETWORK)"
+              :connected="!!account"
+              :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
+              :perform-upload="performUpload"
+              :estimate-storage-cost="estimateUploadStorageCost"
+              @uploaded="onUploaded"
+              @settled="onSettled"
+              @manage-existing="onManageExisting"
+            />
 
-          <section v-if="result" class="result">
-            <h2>Uploaded ✓</h2>
-            <p>
-              <strong>Blob ID:</strong>
-              <CopyableAddress :address="result.blobId" label="Copy blob ID">
-                <ExplorerLink
-                  :href="walruscanBlobUrl(NETWORK, result.blobId)"
-                  :value="result.blobId"
-                  :chars="[8, 6]"
-                />
-              </CopyableAddress>
-            </p>
-            <p>
-              <strong>URL:</strong>
-              <a :href="safeHref(result.url)" target="_blank" rel="noopener noreferrer">{{ result.url }}</a>
-            </p>
-            <p v-if="result.digest">
-              <strong>Certify tx:</strong>
-              <CopyableAddress :address="result.digest" label="Copy transaction digest">
-                <ExplorerLink
-                  :href="suiExplorerUrl('txblock', result.digest, NETWORK)"
-                  :value="result.digest"
-                  :chars="[8, 6]"
-                />
-              </CopyableAddress>
-            </p>
-          </section>
+            <section v-if="result" class="result">
+              <h2>Uploaded ✓</h2>
+              <p>
+                <strong>Blob ID:</strong>
+                <CopyableAddress :address="result.blobId" label="Copy blob ID">
+                  <ExplorerLink
+                    :href="walruscanBlobUrl(NETWORK, result.blobId)"
+                    :value="result.blobId"
+                    :chars="[8, 6]"
+                  />
+                </CopyableAddress>
+              </p>
+              <p>
+                <strong>URL:</strong>
+                <a :href="safeHref(result.url)" target="_blank" rel="noopener noreferrer">{{ result.url }}</a>
+              </p>
+              <p v-if="result.digest">
+                <strong>Certify tx:</strong>
+                <CopyableAddress :address="result.digest" label="Copy transaction digest">
+                  <ExplorerLink
+                    :href="suiExplorerUrl('txblock', result.digest, NETWORK)"
+                    :value="result.digest"
+                    :chars="[8, 6]"
+                  />
+                </CopyableAddress>
+              </p>
+            </section>
+          </template>
         </template>
-      </template>
 
-      <MyBlobs
-        v-if="activeTab === 'blobs'"
-        :address="account?.address ?? null"
-        :build-executor="() => buildExecutor()"
-        :highlight-blob-id="highlightBlobId"
-      />
+        <MyBlobs
+          v-if="activeTab === 'blobs'"
+          :address="account?.address ?? null"
+          :build-executor="() => buildExecutor()"
+          :highlight-blob-id="highlightBlobId"
+        />
+      </UiTabPanel>
     </WalletGuard>
 </template>
 
 <style scoped>
+.walrus-tabs {
+  margin: 1rem 0 0.5rem;
+}
 .result {
   margin-top: 1.5rem;
   padding: 1rem;
