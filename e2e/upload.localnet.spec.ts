@@ -46,7 +46,7 @@ test.describe('walrus-ui localnet upload', () => {
     expect(Buffer.from(await served.body())).toEqual(bytes)
 
     // MyBlobs lists the freshly-certified blob.
-    await page.getByRole('button', { name: 'My Blobs' }).click()
+    await page.getByRole('tab', { name: 'My Blobs' }).click()
     await expect(page.getByText(/certified|epoch/i).first()).toBeVisible()
   })
 })
