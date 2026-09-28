@@ -5,7 +5,7 @@
 #
 #   docker build \
 #     --build-arg VITE_NETWORK=testnet \
-#     --build-arg VITE_WALRUS_RELAY_TESTNET=https://sui-walrus-relay.meddleware.co.uk \
+#     --build-arg VITE_WALRUS_RELAY_TESTNET=https://sui-walrus-relay-testnet.meddleware.co.uk \
 #     --build-arg VITE_ACCESS_GATE_ID_TESTNET=0x... \
 #     --build-arg VITE_ACCESS_GATE_SOULBOUND_TESTNET=true \
 #     -t walrus-ui:<tag> .
