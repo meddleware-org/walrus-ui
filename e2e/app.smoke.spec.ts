@@ -6,17 +6,18 @@ test('the app mounts and renders the shell', async ({ page }) => {
   await page.goto('/')
 
   await expect(page.getByRole('heading', { name: 'Walrus Assets' })).toBeVisible()
-  // Both feature tabs are present.
-  await expect(page.getByRole('button', { name: 'Upload' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'My Blobs' })).toBeVisible()
+  // Both feature tabs are present (AppTabNav renders an ARIA tablist), Upload selected by default.
+  await expect(page.getByRole('tab', { name: 'Upload' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tab', { name: 'My Blobs' })).toHaveAttribute('aria-selected', 'false')
 })
 
 test('switching to the My Blobs tab prompts for a wallet connection', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: 'My Blobs' }).click()
-  // With no wallet injected the app should not crash; it renders the blobs pane (which asks the user
-  // to connect). We assert the tab became active rather than any specific network content.
-  await expect(page.getByRole('button', { name: 'My Blobs' })).toHaveClass(/active/)
+  await page.getByRole('tab', { name: 'My Blobs' }).click()
+  // With no wallet injected the app should not crash: the tab becomes selected and WalletGuard asks
+  // the user to connect (in place of the tab panel), rather than showing any network content.
+  await expect(page.getByRole('tab', { name: 'My Blobs' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText('Connect a Sui wallet to upload and manage your blobs.')).toBeVisible()
 })
 
 test('the wallet control reflects that no wallet is present in a bare browser', async ({ page }) => {
