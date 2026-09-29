@@ -234,7 +234,7 @@ function onSettled(): void {
 
     <AppTabNav v-model="activeTab" :tabs="TABS" id-prefix="walrus" aria-label="Feature tabs" class="walrus-tabs" />
 
-    <!-- The tab list and its panel always render (every tab controls a live panel); the wallet
+    <!-- The tab list and its panel always render (the selected tab controls a live panel); the wallet
          prompt replaces only the panel's content until a wallet is connected. -->
     <UiTabPanel id-prefix="walrus" :tab="activeTab">
       <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
