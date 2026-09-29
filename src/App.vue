@@ -23,9 +23,9 @@ const DEV_URL  = import.meta.env.VITE_DEV_URL  || 'https://dev.meddleware.co.uk/
       </template>
     </AppHeader>
 
-    <div class="app__content">
+    <main class="app__content">
       <WalrusView />
-    </div>
+    </main>
 
     <AppFooter :docs-url="DOCS_URL" :dev-url="DEV_URL" />
   </div>

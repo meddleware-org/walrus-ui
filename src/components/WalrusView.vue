@@ -234,8 +234,10 @@ function onSettled(): void {
 
     <AppTabNav v-model="activeTab" :tabs="TABS" id-prefix="walrus" aria-label="Feature tabs" class="walrus-tabs" />
 
-    <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
-      <UiTabPanel id-prefix="walrus" :tab="activeTab">
+    <!-- The tab list and its panel always render (every tab controls a live panel); the wallet
+         prompt replaces only the panel's content until a wallet is connected. -->
+    <UiTabPanel id-prefix="walrus" :tab="activeTab">
+      <WalletGuard message="Connect a Sui wallet to upload and manage your blobs.">
         <template v-if="activeTab === 'upload'">
           <!-- Gated + no access: replace the form with the purchase CTA so the user is guided to buy
                first, rather than facing a disabled form. -->
@@ -317,8 +319,8 @@ function onSettled(): void {
           :build-executor="() => buildExecutor()"
           :highlight-blob-id="highlightBlobId"
         />
-      </UiTabPanel>
-    </WalletGuard>
+      </WalletGuard>
+    </UiTabPanel>
 </template>
 
 <style scoped>
