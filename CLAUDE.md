@@ -27,8 +27,8 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 
 ## Env var: uploadRelayMaxTipMist
 
-`App.vue` reads `VITE_UPLOAD_RELAY_MAX_TIP_MIST` (baked in at build time) with a 500,000,000
-MIST (0.5 SUI) fallback. This is a cap on the relay tip payment, not a fixed charge — the
+`src/config.ts` reads `VITE_UPLOAD_RELAY_MAX_TIP_MIST` (baked in at build time) with a 50,000,000
+MIST (0.05 SUI) fallback — the workspace-wide ceiling, ~8× the operator relay's worst-case tip. This is a cap on the relay tip payment, not a fixed charge — the
 relay asks for the minimum; this prevents overpayment. Set it via the Docker `--build-arg` to
 give operators control over their tip ceiling.
 

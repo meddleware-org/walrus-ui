@@ -101,6 +101,9 @@ export async function resolveGatedAuthToken<C extends ChallengeLike, Tx, S>(
     // Persist BEFORE the upload so a crash/reload between consume and upload success can resume.
     if (consumeDigest) {
       deps.storage.setItem(deps.key, consumeDigest)
+      // Best-effort: the gateway re-reads the consume transaction with its own bounded retry, so an
+      // indexing delay here must not abort the upload; a genuinely failed consume is rejected by the
+      // gateway and surfaced by the upload step (the stored digest is then re-validated next time).
       await deps.waitForTransaction(consumeDigest).catch(() => {})
     }
   }

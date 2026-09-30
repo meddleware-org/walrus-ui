@@ -62,6 +62,8 @@ export interface RunBlobUploadDeps {
   maxTipMist: number
   /** Blob storage reservation length in epochs. */
   epochs: number
+  /** Register as deletable (owner may delete early). Default false: permanent. */
+  deletable?: boolean
   /**
    * When true, skip the existing-copy precheck and register a fresh copy unconditionally (the user
    * chose "Upload a new copy" after being warned).
@@ -134,14 +136,15 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
   }
 
   deps.onStatus({ step: 'register', detail: 'Registering blob (approve in wallet)…' })
-  const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable: false })
+  const deletable = deps.deletable ?? false
+  const regTx = flow.register({ owner: deps.address, epochs: deps.epochs, deletable })
   regTx.setSenderIfNotSet(deps.address)
   await regTx.build({ client: deps.suiClient })
   const reg = await deps.executor.signAndExecute(regTx)
   await deps.executor.waitForTransaction(reg.digest)
 
   deps.onStatus({ step: 'upload', detail: 'Uploading to the relay…' })
-  const uploaded = await flow.upload({ digest: reg.digest, deletable: false })
+  const uploaded = await flow.upload({ digest: reg.digest, deletable })
 
   // Upload landed (registered + stored + paid). Persist the certificate NOW so certify can be
   // completed later from My Blobs (after a tab switch / reload) if the user dismisses the prompt.
@@ -149,7 +152,7 @@ export async function runBlobUpload(deps: RunBlobUploadDeps): Promise<UploadResu
     blobId: uploaded.blobId,
     blobObjectId: uploaded.blobObjectId,
     certificate: uploaded.certificate,
-    deletable: false,
+    deletable,
   })
 
   // Certify is a plain owner tx built from the storage-node certificate the live `flow` now holds

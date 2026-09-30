@@ -50,7 +50,17 @@ const result = ref<UploadResult | null>(null)
 // and disconnect without needing a manual trigger from the connect button).
 watch(
   () => account.value?.address ?? null,
-  (addr) => { if (addr && gate) void gateState.checkOwnership(addr) },
+  (addr, prev) => {
+    // A switched or disconnected wallet must not inherit the previous wallet's access state.
+    // (walrus-relay >= 0.1.20 adds `reset()`, which also discards in-flight checks; switch to it
+    // when that version is published.)
+    if (addr !== prev) {
+      gateState.hasAccess.value = gate ? null : true
+      gateState.nftId.value = null
+      gateState.usesRemaining.value = null
+    }
+    if (addr && gate) void gateState.checkOwnership(addr)
+  },
   { immediate: true },
 )
 
@@ -80,6 +90,7 @@ async function performUpload(
     relayHost: string
     epochs: number
     force?: boolean
+    deletable?: boolean
     onStatus: (s: string | UploadProgress) => void
   },
 ): Promise<UploadResult> {
@@ -124,6 +135,7 @@ async function performUpload(
         wasmUrl: walrusWasmUrl,
         maxTipMist: uploadRelayMaxTipMist(),
         epochs: opts.epochs,
+        deletable: opts.deletable,
         force: opts.force,
         findExistingCopy,
         executor,

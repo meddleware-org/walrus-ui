@@ -54,6 +54,21 @@ const baseDeps = {
 }
 
 describe('runBlobUpload', () => {
+  it('registers permanent by default and deletable when chosen', async () => {
+    for (const [deletable, expected] of [[undefined, false], [true, true]] as const) {
+      const { mod, flow } = makeModule()
+      await runBlobUpload({
+        ...baseDeps,
+        ...(deletable === undefined ? {} : { deletable }),
+        executor: makeExecutor(),
+        onStatus: () => {},
+        loadWalrusClient: async () => mod,
+      })
+      expect(flow.register).toHaveBeenCalledWith(expect.objectContaining({ deletable: expected }))
+      expect(flow.upload).toHaveBeenCalledWith(expect.objectContaining({ deletable: expected }))
+    }
+  })
+
   it('runs encode → register → upload → certify and resolves id + url + digest', async () => {
     const { mod, steps } = makeModule()
     const executor = makeExecutor()
