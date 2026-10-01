@@ -66,6 +66,18 @@ describe('accessGate', () => {
     expect(gate!.platformConfigId).toBeTruthy()
   })
 
+  it('fixes the package and PlatformConfig to the recorded deployment', async () => {
+    const { accessGateDeployment } = await import('@meddleware/access-gate-client/deployments')
+    const d = accessGateDeployment('testnet')
+    const gate = accessGate('testnet', { VITE_ACCESS_GATE_ID_TESTNET: '0xgate' })
+    expect(gate).toMatchObject({ packageId: d.publishedAt, platformConfigId: d.platformConfigId })
+    expect(gate!.nftType).toBe(`${d.originalId}::access_gate::AccessNFT`)
+  })
+
+  it('is ungated on a network without a recorded deployment', () => {
+    expect(accessGate('mainnet', { VITE_ACCESS_GATE_ID_MAINNET: '0xgate' })).toBeNull()
+  })
+
   it('marks the NFT type soulbound when the flag is set', () => {
     const gate = accessGate('testnet', {
       VITE_ACCESS_GATE_ID_TESTNET: '0xgate',

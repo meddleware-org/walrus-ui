@@ -31,19 +31,18 @@ All `VITE_*` vars are baked into the static bundle at build time.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `VITE_NETWORK` | `testnet` | `testnet` or `mainnet` |
+| `VITE_NETWORK` | `testnet` | Network the standalone build selects (`testnet` or `mainnet`); embedded, the host's selector rules |
 | `VITE_WALRUS_RELAY_TESTNET` | Public Mysten relay | Operator relay URL for testnet |
 | `VITE_WALRUS_RELAY_MAINNET` | Public Mysten relay | Operator relay URL for mainnet |
-| `VITE_RPC_TESTNET` | `https://sui-testnet-rpc.publicnode.com` | Sui RPC for testnet |
-| `VITE_RPC_MAINNET` | `https://fullnode.mainnet.sui.io:443` | Sui RPC for mainnet |
 | `VITE_ACCESS_GATE_ID_TESTNET` | — | Gate object ID (testnet; unset = no gate) |
 | `VITE_ACCESS_GATE_SOULBOUND_TESTNET` | `false` | `true` if NFTs are soulbound |
 | `VITE_ACCESS_GATE_PRICE_MIST_TESTNET` | `0` | Purchase price in MIST |
 | `VITE_ACCESS_GATE_ID_MAINNET` | — | Gate object ID (mainnet) |
 | `VITE_UPLOAD_RELAY_MAX_TIP_MIST` | `50000000` | Max relay tip cap in MIST (0.05 SUI) |
 
-`ACCESS_GATE_PACKAGE_ID` and `ACCESS_GATE_PLATFORM_CONFIG_ID` are hardcoded in
-`@meddleware/walrus-relay` — operators only configure the values listed above.
+The `access_gate` package and `PlatformConfig` come from the published deployment
+(`relayGateConfig` in `@meddleware/walrus-relay`) — operators only configure the values listed
+above.
 
 ## Docker build
 

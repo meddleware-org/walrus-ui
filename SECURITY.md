@@ -3,8 +3,8 @@
 ## Scope
 
 This policy covers security issues in the `@meddleware/walrus-ui` application/library source
-(`src/**`) — the upload/blob-management UI, the `WalrusView` library export, config wiring, and the
-`access-resume` retry helper.
+(`src/**`) — the upload/blob-management UI, the `WalrusView` library export, and config wiring (the
+upload orchestrator and its consume-resume layer are `@meddleware/walrus-client/flow`).
 
 It does not cover:
 

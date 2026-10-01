@@ -13,17 +13,25 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 
 - **Thin app.** No accounting logic, no chain state derivation, no financial calculations.
   The app is an orchestration shell. All pricing and economic truth lives on-chain.
-- **Upload flow is injected, not embedded.** `@mysten/walrus` (the wasm client) is imported
-  dynamically inside `performUpload` in `WalrusView.vue` — not in the eagerly-loaded module graph.
-  This keeps the initial bundle small and defers wasm loading until upload is triggered.
+- **Upload flow comes from `@meddleware/walrus-client/flow`.** `performUpload` in `WalrusView.vue`
+  wires `runBlobUpload` (fresh register every attempt, certify retry, duplicate precheck) and, for a
+  gated relay, `createGatedAccess` (the consume digest is persisted before the upload, reused after
+  an interruption, re-consumed only on `409 redeemed`). The flow loads `@mysten/walrus` (wasm)
+  lazily, so it stays out of the eager bundle; other `@meddleware/walrus-client` uses here are
+  dynamic imports too.
+- **One network source.** The network is wallet-adapter's shared `useNetwork()` selector (the
+  standalone `main.ts` selects `VITE_NETWORK`). The relay hosts, the gate (one access-gate state per
+  Walrus network), the owned-blobs cache (keyed `<network>|<address>`) and the resume keys all follow
+  it. On a network without Walrus (localnet) the view shows a notice.
 - **Wallet-agnostic + shared.** Wallet connections go through `src/wallet.ts`, a thin shim over
   the shared `@meddleware/wallet-adapter` singleton — not any specific wallet extension. The
   singleton means that when `WalrusView` is embedded in the dashboard alongside other tool views,
   they all share one connection. Do not hardcode a wallet; do not reintroduce a local
   wallet-standard implementation.
-- **Commission enforcement is in the library.** `src/config.ts` reads `ACCESS_GATE_PACKAGE_ID`
-  and `ACCESS_GATE_PLATFORM_CONFIG_ID` from `@meddleware/walrus-relay/constants` — these are
-  hardcoded in the library to ensure commission routing. Do not override them here.
+- **Commission enforcement is in the library.** `accessGate()` in `src/config.ts` builds the gate
+  with `relayGateConfig` from `@meddleware/walrus-relay`, which takes the package and
+  `PlatformConfig` from the published deployment. Operators set only the gate id, soulbound flag and
+  price. Do not override the package or PlatformConfig here.
 
 ## Env var: uploadRelayMaxTipMist
 
@@ -39,9 +47,8 @@ give operators control over their tip ceiling.
 | `src/App.vue` | Standalone shell only: `AppHeader` (+ `TipConfigBadge`, `ColorModeControl`) + `<WalrusView>` + `AppFooter` |
 | `src/components/WalrusView.vue` | Core tool UI (tabs, wallet section, gate state, upload orchestration, `MyBlobs`). Exported for inline embedding. |
 | `src/index.ts` | Library entry — exports `WalrusView` for the dashboard to render inline |
-| `src/config.ts` | Env var reading, relay hosts, access gate config parsing |
-| `src/wallet.ts` | Thin shim over `@meddleware/wallet-adapter` binding walrus-ui's `RPC_URLS`; re-exports `useWallet` / `getSuiClient` / `buildExecutor` / `Executor` |
-| `src/access-resume.ts` | Single-use consume persistence/resume: stores the `consumeDigest` in `localStorage` and reuses it on retry/reload so an interrupted upload never burns an NFT use (the gateway treats the digest as the one-time redemption token). Cleared on success; re-consumes only on a `409 redeemed`. |
+| `src/config.ts` | `network` / `walrusNetwork` (wallet-adapter selector), relay hosts, access gate config (`relayGateConfig`) |
+| `src/wallet.ts` | Thin shim over `@meddleware/wallet-adapter` for the selected network; re-exports `useWallet` / `getSuiClient` / `buildExecutor` / `Executor` |
 | `src/components/MyBlobs.vue` | Owned blob listing and lifetime extension |
 
 ## Dual app + library
@@ -64,8 +71,8 @@ Keep each feature as a tab or route so the shell remains composable.
 
 ## What NOT to do
 
-- Do not import `@mysten/walrus` at module top-level — keep it in the dynamic import
-  inside `performUpload`.
+- Do not import `@mysten/walrus` or the `@meddleware/walrus-client` root at module top-level — only
+  the `./flow` subpath statically, everything else through dynamic imports.
 - Do not derive exchange rates, fees, or NAV in this app.
 - Do not add wallet-library-specific code outside `src/wallet.ts`.
 - Do not hardcode `VITE_UPLOAD_RELAY_MAX_TIP_MIST` — read it from `import.meta.env`.
@@ -88,5 +95,5 @@ Keep each feature as a tab or route so the shell remains composable.
 - Deploying walrus-ui against an operator's **own relay + tip ceiling**: the `VITE_*` build args
   (`VITE_UPLOAD_RELAY_MAX_TIP_MIST`, relay hosts, network) and the Docker `--build-arg` seams;
   branding via `@meddleware/design-tokens` + the `AppHeader` slot. Note that commission routing is
-  fixed by `@meddleware/walrus-relay/constants` (access-gate `PlatformConfig`) and is not an operator
+  fixed by `relayGateConfig` in `@meddleware/walrus-relay` (the published access-gate deployment) and is not an operator
   knob here.

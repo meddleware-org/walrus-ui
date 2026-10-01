@@ -37,3 +37,24 @@ describe('useOwnedBlobs epoch source', () => {
     expect(blobs.value[0].endEpoch - currentEpoch.value).toBe(10)
   })
 })
+
+describe('useOwnedBlobs network keying', () => {
+  it('reloads, and clears the old list, when the network changes', async () => {
+    const { useNetwork } = await import('@meddleware/wallet-adapter')
+    const { setNetwork } = useNetwork()
+    setNetwork('testnet')
+    const { blobs, loadedFor, load } = useOwnedBlobs()
+    await load('0xowner', { force: true })
+    expect(loadedFor.value).toBe('testnet|0xowner')
+
+    setNetwork('mainnet')
+    await load('0xowner') // not forced: a cached list for another network must not be reused
+    expect(loadedFor.value).toBe('mainnet|0xowner')
+
+    setNetwork('localnet') // no Walrus network: nothing is listed
+    await load('0xowner')
+    expect(blobs.value).toEqual([])
+    expect(loadedFor.value).toBeNull()
+    setNetwork('testnet')
+  })
+})

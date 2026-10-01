@@ -1,12 +1,12 @@
-// Build-time configuration (Vite inlines VITE_*). The relay hostnames default to
-// the public Mysten relay; set VITE_WALRUS_RELAY_* to your operator relay to collect
-// the tip. Access-gate config is optional (unset ⇒ ungated).
+// Configuration. The network is wallet-adapter's shared runtime selector (the standalone build
+// selects VITE_NETWORK in main.ts; embedded, the host's selector rules). Operator settings are
+// build-time VITE_* per network: relay hostnames default to the public Mysten relay (set
+// VITE_WALRUS_RELAY_* to your operator relay to collect the tip); the access gate is optional
+// (unset ⇒ ungated), and its package + PlatformConfig come from the published deployment.
+import { computed } from 'vue'
 import type { WalrusNetwork, RelayGateConfig } from '@meddleware/walrus-relay'
-import {
-  ACCESS_GATE_PACKAGE_ID,
-  ACCESS_GATE_PLATFORM_CONFIG_ID,
-  accessGateNftType,
-} from '@meddleware/walrus-relay'
+import { relayGateConfig } from '@meddleware/walrus-relay'
+import { useNetwork } from '@meddleware/wallet-adapter'
 
 /** Build-time env bag. Injectable on the env-reading helpers below purely so unit tests can exercise
  *  each branch without depending on Vite's (frozen) `import.meta.env` inlining. */
@@ -14,8 +14,13 @@ export type EnvSource = Record<string, string | undefined>
 
 const env: EnvSource = (import.meta as unknown as { env?: EnvSource }).env ?? {}
 
-/** Active Walrus network, from `VITE_NETWORK` (default `testnet`). */
-export const NETWORK: WalrusNetwork = (env.VITE_NETWORK as WalrusNetwork) || 'testnet'
+/** The active network (read-only ref). */
+export const network = useNetwork().network
+
+/** The active network as a Walrus network, or null where Walrus has none (e.g. localnet). */
+export const walrusNetwork = computed<WalrusNetwork | null>(() =>
+  network.value === 'testnet' || network.value === 'mainnet' ? network.value : null,
+)
 
 /** Public Mysten relays — the fallback when no operator relay is configured. */
 export const PUBLIC_WALRUS_RELAY_HOSTS: Record<WalrusNetwork, string> = {
@@ -59,33 +64,23 @@ export function uploadRelayMaxTipMist(envSource: EnvSource = env): number {
 }
 
 /**
- * gRPC-web endpoint used to build + execute the register/certify transactions and read owned
- * blobs. The Sui SDK's JSON-RPC client is deprecated, so this must be a gRPC-web-capable endpoint
- * (the Mysten public fullnodes serve gRPC-web at :443 via the browser Fetch transport).
- */
-export const RPC_URLS: Record<WalrusNetwork, string> = {
-  testnet: env.VITE_RPC_TESTNET || 'https://fullnode.testnet.sui.io:443',
-  mainnet: env.VITE_RPC_MAINNET || 'https://fullnode.mainnet.sui.io:443',
-}
-
-/**
- * Parse the optional NFT access-gate config for a network from env.
- * packageId and platformConfigId are hardcoded in the library — operators only
- * need to supply their Gate object ID, soulbound flag, and purchase price.
+ * The optional NFT access gate for a network: the operator supplies only the Gate id, soulbound
+ * flag and purchase price (`VITE_ACCESS_GATE_*_{NET}`); `relayGateConfig` fixes the package and
+ * `PlatformConfig` to the published deployment (commission enforcement). `null` — an ungated
+ * relay — when no gate id is set, or when no access_gate deployment is recorded for the network.
  */
 export function accessGate(network: WalrusNetwork, envSource: EnvSource = env): RelayGateConfig | null {
   const NET = network.toUpperCase()
-  const packageId = ACCESS_GATE_PACKAGE_ID[network]
-  const platformConfigId = ACCESS_GATE_PLATFORM_CONFIG_ID[network]
   const gateId = envSource[`VITE_ACCESS_GATE_ID_${NET}`]
-  if (!packageId || !platformConfigId || !gateId) return null
-  const soulbound = envSource[`VITE_ACCESS_GATE_SOULBOUND_${NET}`] === 'true'
-  return {
-    packageId,
-    gateId,
-    platformConfigId,
-    nftType: accessGateNftType(network, soulbound),
-    soulbound,
-    priceMist: BigInt(envSource[`VITE_ACCESS_GATE_PRICE_MIST_${NET}`] || '0'),
+  if (!gateId) return null
+  try {
+    return relayGateConfig(network, {
+      gateId,
+      soulbound: envSource[`VITE_ACCESS_GATE_SOULBOUND_${NET}`] === 'true',
+      priceMist: BigInt(envSource[`VITE_ACCESS_GATE_PRICE_MIST_${NET}`] || '0'),
+    })
+  } catch (e) {
+    console.warn(`[walrus-ui] access gate for ${network} disabled: ${e instanceof Error ? e.message : String(e)}`)
+    return null
   }
 }

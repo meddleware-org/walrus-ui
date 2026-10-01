@@ -3,7 +3,7 @@
 // The core UI lives in WalrusView.vue (also exported for inline embedding in the dashboard).
 import { AppHeader, AppFooter, ColorModeControl, useColorMode } from '@meddleware/ui'
 import { TipConfigBadge } from '@meddleware/walrus-relay'
-import { NETWORK, OPERATOR_RELAY_HOSTS } from './config.js'
+import { walrusNetwork, OPERATOR_RELAY_HOSTS } from './config.js'
 import WalrusView from './components/WalrusView.vue'
 
 const { mode, set } = useColorMode('dark')
@@ -18,7 +18,7 @@ const DEV_URL  = import.meta.env.VITE_DEV_URL  || 'https://dev.meddleware.co.uk/
         <h1 class="brand-title">Walrus Assets</h1>
       </template>
       <template #actions>
-        <TipConfigBadge :host="OPERATOR_RELAY_HOSTS[NETWORK]" />
+        <TipConfigBadge v-if="walrusNetwork" :host="OPERATOR_RELAY_HOSTS[walrusNetwork]" />
         <ColorModeControl :model-value="mode" @update:model-value="set" />
       </template>
     </AppHeader>

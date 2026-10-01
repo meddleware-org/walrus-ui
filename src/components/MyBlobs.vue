@@ -5,7 +5,7 @@ import type { OwnedBlob } from '@meddleware/walrus-client'
 import { MAX_SINGLE_RESERVATION_EPOCHS, formatCoinAmount } from '@meddleware/walrus-relay'
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import type { Executor } from '../wallet.js'
-import { NETWORK, walruscanBlobUrl } from '../config.js'
+import { walrusNetwork, walruscanBlobUrl } from '../config.js'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import { groupBlobs, expiryLabel, maxExtendableEpochs, type BlobGroup } from '../blob-groups.js'
 import {
@@ -13,7 +13,7 @@ import {
   loadPendingCertifies,
   clearPendingCertify,
   type PendingCertify,
-} from '../certify-resume.js'
+} from '@meddleware/walrus-client/flow'
 
 const props = defineProps<{
   /** Connected wallet address whose owned blobs to list; `null` when no wallet is connected. */
@@ -23,6 +23,13 @@ const props = defineProps<{
   /** When set, the matching group is expanded + scrolled into view (from the duplicate-upload flow). */
   highlightBlobId?: string | null
 }>()
+
+/** The active Walrus network; the view is only rendered on one (WalrusView gates it). */
+function currentNetwork(): 'testnet' | 'mainnet' {
+  const net = walrusNetwork.value
+  if (!net) throw new Error('Walrus storage is not available on this network.')
+  return net
+}
 
 // Shared, session-persistent cache (survives tab switches and inline re-mounts).
 const { blobs, currentEpoch, loading, error, load } = useOwnedBlobs()
@@ -77,11 +84,11 @@ function refresh(): Promise<void> {
 
 /** Reload the pending map from storage, dropping entries whose blob is already certified. */
 function refreshPending(): void {
-  if (!props.address) {
+  if (!props.address || !walrusNetwork.value) {
     pending.value = {}
     return
   }
-  const key = pendingCertifyKey(NETWORK, props.address)
+  const key = pendingCertifyKey(walrusNetwork.value, props.address)
   const map = loadPendingCertifies(window.localStorage, key)
   for (const blob of blobs.value) {
     if (blob.certified && blob.objectId in map) {
@@ -108,7 +115,7 @@ async function estimateExtend(blob: OwnedBlob, epochs: number): Promise<void> {
   const token = (extendReq[id] = (extendReq[id] ?? 0) + 1)
   try {
     const { createWalrusClient, estimateStorageCost } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const walrusClient = createWalrusClient({ network: currentNetwork(), wasmUrl: walrusWasmUrl })
     // Extend adds storage only (no one-time write cost), so price the `storageCost` component.
     const cost = await estimateStorageCost(walrusClient, blob.size, epochs)
     if (extendReq[id] === token) {
@@ -126,7 +133,7 @@ async function extendBlob(blob: OwnedBlob): Promise<void> {
   actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Building transaction…' }
   try {
     const { createWalrusClient, extendBlobLifetimeTransaction } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const walrusClient = createWalrusClient({ network: currentNetwork(), wasmUrl: walrusWasmUrl })
     const tx = await extendBlobLifetimeTransaction(walrusClient, blob.objectId, { epochs })
     const executor = await props.buildExecutor()
     actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Approve in wallet…' }
@@ -149,7 +156,7 @@ async function certifyBlob(blob: OwnedBlob): Promise<void> {
   actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Building transaction…' }
   try {
     const { createWalrusClient, certifyBlobTransaction } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const walrusClient = createWalrusClient({ network: currentNetwork(), wasmUrl: walrusWasmUrl })
     const tx = certifyBlobTransaction(walrusClient, {
       blobId: entry.blobId,
       blobObjectId: entry.blobObjectId,
@@ -160,7 +167,7 @@ async function certifyBlob(blob: OwnedBlob): Promise<void> {
     actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Approve in wallet…' }
     const { digest } = await executor.signAndExecute(tx)
     await executor.waitForTransaction(digest)
-    clearPendingCertify(window.localStorage, pendingCertifyKey(NETWORK, props.address), blob.objectId)
+    clearPendingCertify(window.localStorage, pendingCertifyKey(currentNetwork(), props.address), blob.objectId)
     actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Certified ✓ (${digest.slice(0, 8)}…)` }
     await refresh()
   } catch (e) {
@@ -172,9 +179,9 @@ async function certifyBlob(blob: OwnedBlob): Promise<void> {
 
 // Load on first open and whenever the address changes; re-derive pending on list/address changes.
 onMounted(() => void load(props.address))
-watch(() => props.address, (addr) => void load(addr))
+watch([() => props.address, walrusNetwork], ([addr]) => void load(addr))
 watch(blobs, () => refreshPending())
-watch(() => props.address, () => refreshPending())
+watch([() => props.address, walrusNetwork], () => refreshPending())
 
 // Seed each group's extend amount with a sensible default (+10, clamped) without pricing it — the
 // estimate is fetched on the first user interaction.
@@ -236,7 +243,7 @@ watch(
           >
             <td>
               <CopyableAddress :address="g.blobId" label="Copy blob ID">
-                <ExplorerLink :href="walruscanBlobUrl(NETWORK, g.blobId)" :value="g.blobId" :chars="[8, 6]" />
+                <ExplorerLink :href="walruscanBlobUrl(walrusNetwork ?? 'testnet', g.blobId)" :value="g.blobId" :chars="[8, 6]" />
               </CopyableAddress>
               <button
                 v-if="g.copies.length > 1"

@@ -3,33 +3,30 @@
 // Rendered standalone by walrus-ui's App.vue and inline by the dashboard. Wallet state comes
 // from the shared @meddleware/wallet-adapter singleton (via ./wallet.js), so connecting here or
 // in any other inline tool view reflects everywhere.
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   WalrusUpload,
   AccessGateCta,
   useAccessGate,
 } from '@meddleware/walrus-relay'
-import type { UploadResult, UploadProgress, ExistingCopy } from '@meddleware/walrus-relay'
 import { AppTabNav, CopyableAddress, ExplorerLink, UiNotice, UiTabPanel, UiToolIntro, suiExplorerUrl, safeHref, type AppTab } from '@meddleware/ui'
 // Lightweight URL import — just the wasm asset URL (does not pull the walrus client).
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url'
 import { WalletGuard } from '@meddleware/wallet-adapter'
 import { useWallet, getSuiClient } from '../wallet.js'
-import { fetchChallenge, buildAccessProof } from '@meddleware/nft-gate-client'
-import { NETWORK, relayHosts, accessGate, uploadRelayMaxTipMist, walruscanBlobUrl } from '../config.js'
-import { runBlobUpload } from '../upload-flow.js'
-import { getCertifyRetry } from '@meddleware/walrus-relay'
+import { network, walrusNetwork, relayHosts, accessGate, uploadRelayMaxTipMist, walruscanBlobUrl } from '../config.js'
 import {
+  runBlobUpload,
+  createGatedAccess,
   consumeStorageKey,
-  isRedeemedConflict,
-  resolveGatedAuthToken,
-} from '../access-resume.js'
-import {
   pendingCertifyKey,
   savePendingCertify,
   clearPendingCertify,
   loadPendingCertifies,
-} from '../certify-resume.js'
+  type BlobUploadResult as UploadResult,
+  type ExistingCopy,
+  type UploadProgress,
+} from '@meddleware/walrus-client/flow'
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
@@ -41,25 +38,28 @@ const activeTab = ref<string>('upload')
 
 const { account, signPersonalMessage, buildExecutor } = useWallet()
 
-const gate = accessGate(NETWORK)
-const gateState = useAccessGate({ gate, getClient: () => getSuiClient() })
+// One access-gate state per Walrus network (the gate is a per-network setting); the active
+// network's is used. Each is inert until an ownership check runs.
+const gateStates = {
+  testnet: useAccessGate({ gate: accessGate('testnet'), getClient: () => getSuiClient() }),
+  mainnet: useAccessGate({ gate: accessGate('mainnet'), getClient: () => getSuiClient() }),
+}
+/** The active network's gate state (testnet's while the view is hidden on a non-Walrus network). */
+const gateState = computed(() => gateStates[walrusNetwork.value ?? 'testnet'])
 const purchasing = ref(false)
 const result = ref<UploadResult | null>(null)
 
-// Check gate ownership whenever the connected account changes (handles connect, reconnect,
-// and disconnect without needing a manual trigger from the connect button).
+// Check gate ownership whenever the connected account or the network changes. A switched or
+// disconnected wallet never inherits the previous wallet's access state: `reset()` also discards
+// any in-flight check.
 watch(
-  () => account.value?.address ?? null,
-  (addr, prev) => {
-    // A switched or disconnected wallet must not inherit the previous wallet's access state.
-    // (walrus-relay >= 0.1.20 adds `reset()`, which also discards in-flight checks; switch to it
-    // when that version is published.)
-    if (addr !== prev) {
-      gateState.hasAccess.value = gate ? null : true
-      gateState.nftId.value = null
-      gateState.usesRemaining.value = null
-    }
-    if (addr && gate) void gateState.checkOwnership(addr)
+  [() => account.value?.address ?? null, walrusNetwork],
+  ([addr], previous) => {
+    const prevAddr = previous?.[0] ?? null
+    if (addr !== prevAddr) for (const s of Object.values(gateStates)) s.reset()
+    else gateState.value.reset()
+    result.value = null
+    if (addr && walrusNetwork.value && gateState.value.gate) void gateState.value.checkOwnership(addr)
   },
   { immediate: true },
 )
@@ -69,21 +69,17 @@ async function onPurchase(): Promise<void> {
   purchasing.value = true
   try {
     const executor = await buildExecutor()
-    await gateState.purchase(executor, account.value.address)
+    await gateState.value.purchase(executor, account.value.address)
   } finally {
     purchasing.value = false
   }
 }
 
-// Wire the shared WalrusUpload widget to the extracted upload orchestration + the wallet. The
-// register/upload/certify sequence lives in src/upload-flow.ts (unit-tested); this closure gathers
-// the wallet-bound inputs and manages the single-use consume resume layer:
-//   Single-use consume: the relay treats the permanent on-chain `consumeDigest` as the one-time
-//   redemption token, so a use is only spent when an upload succeeds. The digest is persisted and
-//   reused across retries/reload (re-signing a fresh challenge is free); cleared on success.
-// The Walrus registration is NOT resumed — with an upload relay the tip + nonce live in the register
-// transaction and the relay requires it to be recent, so every attempt registers fresh (see
-// upload-flow.ts). Reusing a prior registration is what produced "the received transaction is too old".
+// Wire the shared WalrusUpload widget to walrus-client's upload orchestrator and the wallet. The
+// orchestrator registers fresh on every attempt (the relay rejects an old register transaction),
+// and, for a gated relay, `createGatedAccess` keeps the single-use consume resumable: its digest is
+// persisted before the upload, reused after an interruption, cleared once the upload lands, and
+// replaced only after the gateway reports it redeemed.
 async function performUpload(
   bytes: Uint8Array,
   opts: {
@@ -95,82 +91,52 @@ async function performUpload(
   },
 ): Promise<UploadResult> {
   if (!account.value) throw new Error('Connect your wallet first.')
+  const net = walrusNetwork.value
+  if (!net) throw new Error(`Walrus storage is not available on ${network.value}.`)
   const executor = await buildExecutor()
   const address = account.value.address
   const storage = window.localStorage
+  const state = gateState.value
+  const gate = state.gate
+  const nftId = state.nftId.value
 
-  const gated = !!(gate && gateState.hasAccess.value === true && gateState.nftId.value)
-  const consumeKey = gate ? consumeStorageKey(NETWORK, gate.gateId, address) : null
-
-  // Gated uploads spend one NFT use on-chain before the core flow — surface it as the leading
-  // "Access" step so the stepper reflects the extra wallet approval (a reused consume is instant).
-  if (gated) opts.onStatus({ step: 'access', detail: 'Confirming access…' })
-
-  // Resolve this attempt's relay token (gated only); reuses a stored consume, fresh challenge each time.
-  const token = (forceFresh: boolean): Promise<string | undefined> =>
-    !gated
-      ? Promise.resolve(undefined)
-      : resolveGatedAuthToken({
+  const access =
+    gate && state.hasAccess.value === true && nftId
+      ? createGatedAccess({
           storage,
-          key: consumeKey as string,
+          key: consumeStorageKey(net, gate.gateId, address),
           relayHost: opts.relayHost,
           address,
-          nftId: gateState.nftId.value as string,
-          fetchChallenge,
-          buildConsume: (id, nonce) => gateState.buildConsume(id, nonce),
+          nftId,
+          singleUse: state.usesRemaining.value !== null,
+          buildConsume: (id, nonce) => state.buildConsume(id, nonce),
           signAndExecute: (tx) => executor.signAndExecute(tx),
           waitForTransaction: (digest) => executor.waitForTransaction(digest),
-          buildAccessProof,
           sign: signPersonalMessage,
-          forceFresh,
+          onStatus: opts.onStatus,
         })
+      : undefined
 
-  const runOnce = async (authToken: string | undefined): Promise<UploadResult> => {
-    try {
-      const r = await runBlobUpload({
-        bytes,
-        network: NETWORK,
-        relayHost: opts.relayHost,
-        address,
-        wasmUrl: walrusWasmUrl,
-        maxTipMist: uploadRelayMaxTipMist(),
-        epochs: opts.epochs,
-        deletable: opts.deletable,
-        force: opts.force,
-        findExistingCopy,
-        executor,
-        suiClient: getSuiClient(),
-        authToken,
-        onStatus: opts.onStatus,
-        // Persist the certificate the moment the upload lands, and drop it once certified — so a
-        // dismissed certify can be finished from My Blobs after a tab switch or reload.
-        onUploaded: (info) =>
-          savePendingCertify(storage, pendingCertifyKey(NETWORK, address), info),
-        onCertified: (blobObjectId) =>
-          clearPendingCertify(storage, pendingCertifyKey(NETWORK, address), blobObjectId),
-      })
-      // Success → clear the consume layer (the use is now genuinely spent for an upload).
-      if (consumeKey) storage.removeItem(consumeKey)
-      return r
-    } catch (e) {
-      // A certify-only failure means the upload already landed (relay access was used), so clear the
-      // consume too — the certify retry is a plain Sui tx and must not trigger a fresh NFT consume.
-      if (getCertifyRetry(e) && consumeKey) storage.removeItem(consumeKey)
-      throw e
-    }
-  }
-
-  try {
-    return await runOnce(await token(false))
-  } catch (e) {
-    if (gated && isRedeemedConflict(e)) {
-      // Stored consume already redeemed (a prior upload actually landed): clear it, spend a fresh
-      // use, and retry.
-      storage.removeItem(consumeKey as string)
-      return await runOnce(await token(true))
-    }
-    throw e
-  }
+  return runBlobUpload({
+    bytes,
+    network: net,
+    relayHost: opts.relayHost,
+    address,
+    wasmUrl: walrusWasmUrl,
+    maxTipMist: uploadRelayMaxTipMist(),
+    epochs: opts.epochs,
+    deletable: opts.deletable,
+    force: opts.force,
+    findExistingCopy,
+    executor,
+    suiClient: getSuiClient(),
+    access,
+    onStatus: opts.onStatus,
+    // Persist the certificate the moment the upload lands, and drop it once certified — so a
+    // dismissed certify can be finished from My Blobs after a tab switch or reload.
+    onUploaded: (info) => savePendingCertify(storage, pendingCertifyKey(net, address), info),
+    onCertified: (blobObjectId) => clearPendingCertify(storage, pendingCertifyKey(net, address), blobObjectId),
+  })
 }
 
 // Precheck (before paying to register): does the wallet already own this exact blob? Returns a
@@ -178,10 +144,11 @@ async function performUpload(
 // (offer Certify). Best-effort: any failure returns null so the upload simply proceeds.
 async function findExistingCopy(blobId: string): Promise<ExistingCopy | null> {
   const address = account.value?.address
-  if (!address) return null
+  const net = walrusNetwork.value
+  if (!address || !net) return null
   try {
     const { createWalrusClient, fetchOwnedWalrusBlobs } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const walrusClient = createWalrusClient({ network: net, wasmUrl: walrusWasmUrl })
     const [sys, owned] = await Promise.all([
       walrusClient.walrus.systemState(),
       fetchOwnedWalrusBlobs(getSuiClient(), walrusClient, address),
@@ -192,7 +159,7 @@ async function findExistingCopy(blobId: string): Promise<ExistingCopy | null> {
     if (certified) {
       return { kind: 'certified', blobId, objectId: certified.objectId, endEpoch: certified.endEpoch }
     }
-    const store = loadPendingCertifies(window.localStorage, pendingCertifyKey(NETWORK, address))
+    const store = loadPendingCertifies(window.localStorage, pendingCertifyKey(net, address))
     const pending = copies.find((b) => !b.certified && b.objectId in store)
     if (pending) {
       return { kind: 'pending', blobId, objectId: pending.objectId, endEpoch: pending.endEpoch }
@@ -206,9 +173,11 @@ async function findExistingCopy(blobId: string): Promise<ExistingCopy | null> {
 // Injected into the upload widget so it can price a chosen reservation duration (storage is WAL,
 // billed per size × epochs). Returns total cost in FROST, or null on error.
 async function estimateUploadStorageCost(sizeBytes: number, epochs: number): Promise<bigint | null> {
+  const net = walrusNetwork.value
+  if (!net) return null
   try {
     const { createWalrusClient, estimateStorageCost } = await import('@meddleware/walrus-client')
-    const walrusClient = createWalrusClient({ network: NETWORK, wasmUrl: walrusWasmUrl })
+    const walrusClient = createWalrusClient({ network: net, wasmUrl: walrusWasmUrl })
     const cost = await estimateStorageCost(walrusClient, sizeBytes, epochs)
     return cost.totalCost
   } catch {
@@ -236,13 +205,16 @@ function onUploaded(r: UploadResult): void {
 function onSettled(): void {
   if (account.value) {
     void ownedBlobs.load(account.value.address, { force: true })
-    void gateState.checkOwnership(account.value.address)
+    if (gateState.value.gate) void gateState.value.checkOwnership(account.value.address)
   }
 }
 </script>
 
 <template>
-    <UiToolIntro>Upload and manage blobs on Walrus decentralised storage ({{ NETWORK }}).</UiToolIntro>
+    <UiToolIntro>Upload and manage blobs on Walrus decentralised storage ({{ network }}).</UiToolIntro>
+
+    <UiNotice v-if="!walrusNetwork" type="info">Walrus storage is not available on {{ network }}. Switch to testnet or mainnet.</UiNotice>
+    <template v-else>
 
     <AppTabNav v-model="activeTab" :tabs="TABS" id-prefix="walrus" aria-label="Feature tabs" class="walrus-tabs" />
 
@@ -258,7 +230,7 @@ function onSettled(): void {
               :gate-configured="gateState.gateConfigured"
               :has-access="gateState.hasAccess.value"
               :busy="purchasing"
-              :price-mist="gate?.priceMist ?? null"
+              :price-mist="gateState.gate?.priceMist ?? null"
               @purchase="onPurchase"
             />
           </div>
@@ -285,7 +257,7 @@ function onSettled(): void {
             </UiNotice>
 
             <WalrusUpload
-              :hosts="relayHosts(NETWORK)"
+              :hosts="relayHosts(walrusNetwork)"
               :connected="!!account"
               :access="{ gateConfigured: gateState.gateConfigured, hasAccess: gateState.hasAccess }"
               :perform-upload="performUpload"
@@ -301,7 +273,7 @@ function onSettled(): void {
                 <strong>Blob ID:</strong>
                 <CopyableAddress :address="result.blobId" label="Copy blob ID">
                   <ExplorerLink
-                    :href="walruscanBlobUrl(NETWORK, result.blobId)"
+                    :href="walruscanBlobUrl(walrusNetwork, result.blobId)"
                     :value="result.blobId"
                     :chars="[8, 6]"
                   />
@@ -315,7 +287,7 @@ function onSettled(): void {
                 <strong>Certify tx:</strong>
                 <CopyableAddress :address="result.digest" label="Copy transaction digest">
                   <ExplorerLink
-                    :href="suiExplorerUrl('txblock', result.digest, NETWORK)"
+                    :href="suiExplorerUrl('txblock', result.digest, walrusNetwork)"
                     :value="result.digest"
                     :chars="[8, 6]"
                   />
@@ -333,6 +305,7 @@ function onSettled(): void {
         />
       </WalletGuard>
     </UiTabPanel>
+    </template>
 </template>
 
 <style scoped>
