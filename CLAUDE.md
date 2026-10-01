@@ -11,6 +11,8 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 
 ## Architectural invariants
 
+- **One wallet-adapter in a host.** Declare `@meddleware/wallet-adapter` as a peerDependency (`>=0.0.12 <0.2.0`, plus a devDependency):
+  the host's single copy must satisfy every embedded tool, or each gets its own connection.
 - **Thin app.** No accounting logic, no chain state derivation, no financial calculations.
   The app is an orchestration shell. All pricing and economic truth lives on-chain.
 - **Upload flow comes from `@meddleware/walrus-client/flow`.** `performUpload` in `WalrusView.vue`
