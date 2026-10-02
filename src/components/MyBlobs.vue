@@ -13,7 +13,11 @@ import {
   loadPendingCertifies,
   clearPendingCertify,
   type PendingCertify,
+  browserStorage,
 } from '@meddleware/walrus-client/flow'
+
+// Browser storage that never throws (blocked site data falls back to memory for this page).
+const storage = browserStorage()
 
 const props = defineProps<{
   /** Connected wallet address whose owned blobs to list; `null` when no wallet is connected. */
@@ -89,10 +93,10 @@ function refreshPending(): void {
     return
   }
   const key = pendingCertifyKey(walrusNetwork.value, props.address)
-  const map = loadPendingCertifies(window.localStorage, key)
+  const map = loadPendingCertifies(storage, key)
   for (const blob of blobs.value) {
     if (blob.certified && blob.objectId in map) {
-      clearPendingCertify(window.localStorage, key, blob.objectId)
+      clearPendingCertify(storage, key, blob.objectId)
       delete map[blob.objectId]
     }
   }
@@ -167,7 +171,7 @@ async function certifyBlob(blob: OwnedBlob): Promise<void> {
     actionStatus.value = { ...actionStatus.value, [blob.objectId]: 'Approve in wallet…' }
     const { digest } = await executor.signAndExecute(tx)
     await executor.waitForTransaction(digest)
-    clearPendingCertify(window.localStorage, pendingCertifyKey(currentNetwork(), props.address), blob.objectId)
+    clearPendingCertify(storage, pendingCertifyKey(currentNetwork(), props.address), blob.objectId)
     actionStatus.value = { ...actionStatus.value, [blob.objectId]: `Certified ✓ (${digest.slice(0, 8)}…)` }
     await refresh()
   } catch (e) {

@@ -26,7 +26,11 @@ import {
   type BlobUploadResult as UploadResult,
   type ExistingCopy,
   type UploadProgress,
+  browserStorage,
 } from '@meddleware/walrus-client/flow'
+
+// Browser storage that never throws (blocked site data falls back to memory for this page).
+const storage = browserStorage()
 import { useOwnedBlobs } from '../composables/useOwnedBlobs.js'
 import MyBlobs from './MyBlobs.vue'
 
@@ -95,7 +99,6 @@ async function performUpload(
   if (!net) throw new Error(`Walrus storage is not available on ${network.value}.`)
   const executor = await buildExecutor()
   const address = account.value.address
-  const storage = window.localStorage
   const state = gateState.value
   const gate = state.gate
   const nftId = state.nftId.value
@@ -159,7 +162,7 @@ async function findExistingCopy(blobId: string): Promise<ExistingCopy | null> {
     if (certified) {
       return { kind: 'certified', blobId, objectId: certified.objectId, endEpoch: certified.endEpoch }
     }
-    const store = loadPendingCertifies(window.localStorage, pendingCertifyKey(net, address))
+    const store = loadPendingCertifies(storage, pendingCertifyKey(net, address))
     const pending = copies.find((b) => !b.certified && b.objectId in store)
     if (pending) {
       return { kind: 'pending', blobId, objectId: pending.objectId, endEpoch: pending.endEpoch }
