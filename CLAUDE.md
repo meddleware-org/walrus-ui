@@ -11,6 +11,12 @@ monorepo; extracted to its own repo `walrus-ui` v0.1.0. Consumes `@meddleware/wa
 
 ## Architectural invariants
 
+- **No on-chain logic here — extend the domain client.** `suiBoundary()` from
+  `@meddleware/eslint-config` (the last entry in `eslint.config.ts`) forbids, in `src/` outside
+  `src/wallet.ts`: value imports of `@mysten/sui/{grpc,client,transactions}` (type-only imports are
+  fine; `@mysten/sui/jsonRpc` is banned outright), building transactions and chain reads. URL
+  bindings on native elements must go through `safeHref`, `safeIcon`, `suiExplorerUrl` or
+  `walruscanBlobUrl`. Do not disable it — move the logic into the domain client instead.
 - **One wallet-adapter in a host.** Declare `@meddleware/wallet-adapter` as a peerDependency (`>=0.0.12 <0.2.0`, plus a devDependency):
   the host's single copy must satisfy every embedded tool, or each gets its own connection.
 - **Thin app.** No accounting logic, no chain state derivation, no financial calculations.

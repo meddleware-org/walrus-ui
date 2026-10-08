@@ -1,3 +1,4 @@
+import { suiBoundary } from '@meddleware/eslint-config'
 import { globalIgnores } from 'eslint/config'
 import { defineConfigWithVueTs, vueTsConfigs } from '@vue/eslint-config-typescript'
 import pluginVue from 'eslint-plugin-vue'
@@ -34,4 +35,6 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+
+  ...suiBoundary(),
 )
