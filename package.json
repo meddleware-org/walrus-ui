@@ -1,6 +1,6 @@
 {
   "name": "@meddleware/walrus-ui",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "homepage": "https://docs.meddleware.co.uk/blockchain/sui/walrus-storage/",
   "description": "Standalone Vue 3 SPA for uploading blobs to Walrus decentralised storage and managing owned blobs — wallet-connected, NFT-gated relay support.",
   "author": "Meddleware <dev@meddleware.co.uk>",
@@ -47,9 +47,9 @@
   "dependencies": {
     "@meddleware/design-tokens": "^0.1.8",
     "@meddleware/ui": "^0.1.30",
-    "@meddleware/walrus-client": "^0.0.25",
-    "@meddleware/walrus-relay": "^0.1.26",
-    "@mysten/sui": "^2.33.1",
+    "@meddleware/walrus-client": "^0.0.26",
+    "@meddleware/walrus-relay": "^0.1.28",
+    "@mysten/sui": "^2.33.2",
     "@mysten/wallet-standard": "^0.21.0",
     "@mysten/walrus": "~1.2.32",
     "@mysten/walrus-wasm": "~0.3.1",
@@ -59,7 +59,7 @@
     "@meddleware/wallet-adapter": ">=0.0.12 <0.2.0"
   },
   "devDependencies": {
-    "@meddleware/access-gate-client": "^0.0.4",
+    "@meddleware/access-gate-client": "^0.0.6",
     "@meddleware/eslint-config": "^0.0.1",
     "@meddleware/wallet-adapter": "^0.0.13",
     "@playwright/test": "~1.63.0",

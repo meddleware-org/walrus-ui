@@ -4,6 +4,7 @@
 // from the shared @meddleware/wallet-adapter singleton (via ./wallet.js), so connecting here or
 // in any other inline tool view reflects everywhere.
 import { computed, ref, watch } from 'vue'
+import { normalizeSuiAddress } from '@mysten/sui/utils'
 import {
   WalrusUpload,
   AccessGateCta,
@@ -110,8 +111,11 @@ async function performUpload(
           key: consumeStorageKey(net, gate.gateId, address),
           relayHost: opts.relayHost,
           address,
+          // Signed into every access proof with the relay's origin: a proof made here works nowhere else.
+          gateId: normalizeSuiAddress(gate.gateId),
+          network: net,
           nftId,
-          singleUse: state.usesRemaining.value !== null,
+          singleUse: state.singleUse.value,
           buildConsume: (id, nonce) => state.buildConsume(id, nonce),
           signAndExecute: (tx) => executor.signAndExecute(tx),
           waitForTransaction: (digest) => executor.waitForTransaction(digest),
