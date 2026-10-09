@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The release workflow runs the same checks on the tagged commit.
+  workflow_call:
 
 permissions:
   contents: read
@@ -44,5 +46,8 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Third-party licence notices
+        run: npm run check:licenses && test -s dist/THIRD_PARTY_LICENSES
         env:
           VITE_NETWORK: testnet

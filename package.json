@@ -1,6 +1,6 @@
 {
   "name": "@meddleware/walrus-ui",
-  "version": "0.1.56",
+  "version": "0.1.57",
   "homepage": "https://docs.meddleware.co.uk/blockchain/sui/walrus-storage/",
   "description": "Standalone Vue 3 SPA for uploading blobs to Walrus decentralised storage and managing owned blobs — wallet-connected, NFT-gated relay support.",
   "author": "Meddleware <dev@meddleware.co.uk>",
@@ -39,7 +39,9 @@
     "lint:css": "stylelint \"src/**/*.{css,vue}\"",
     "lint:js": "eslint .",
     "lint": "npm run lint:css && npm run lint:js && npm run lint:html",
-    "lint:html": "html-validate \"src/**/*.vue\""
+    "lint:html": "html-validate \"src/**/*.vue\"",
+    "licenses": "node scripts/third-party-licenses.mjs",
+    "check:licenses": "node scripts/third-party-licenses.mjs --check"
   },
   "publishConfig": {
     "access": "public"
