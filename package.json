@@ -63,7 +63,7 @@
     "@meddleware/eslint-config": "^0.0.2",
     "@meddleware/wallet-adapter": "^0.0.13",
     "@playwright/test": "~1.63.0",
-    "@types/node": "~24.12.2",
+    "@types/node": "~26.6.4",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/eslint-config-typescript": "^14.9.0",
     "autoprefixer": "^10.4.20",
